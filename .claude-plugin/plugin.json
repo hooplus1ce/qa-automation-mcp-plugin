@@ -4,5 +4,23 @@
   "version": "0.2.0",
   "author": {
     "name": "Hoolinks"
+  },
+  "mcpServers": {
+    "qa-automation-mcp": {
+      "command": "uv",
+      "args": [
+        "run",
+        "--directory",
+        "${CLAUDE_PLUGIN_ROOT}",
+        "fastmcp",
+        "run",
+        "--skip-env",
+        "fastmcp.json"
+      ],
+      "env": {
+        "CDP_URL": "http://127.0.0.1:9222",
+        "PYTHONUNBUFFERED": "1"
+      }
+    }
   }
 }

@@ -8,6 +8,7 @@
         "${CLAUDE_PLUGIN_ROOT}",
         "fastmcp",
         "run",
+        "--skip-env",
         "fastmcp.json"
       ],
       "env": {

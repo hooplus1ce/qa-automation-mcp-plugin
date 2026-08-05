@@ -1,6 +1,7 @@
 {
   "$schema": "https://claude.ai/schemas/marketplace.json",
   "name": "qa-automation-plugins",
+  "description": "企业级 Web 自动化测试 QA Automation MCP 插件市场",
   "owner": {
     "name": "hooplus1ce",
     "url": "https://github.com/hooplus1ce"
