@@ -1,0 +1,19 @@
+{
+  "mcpServers": {
+    "qa-automation-mcp": {
+      "command": "uv",
+      "args": [
+        "run",
+        "--directory",
+        "${CLAUDE_PLUGIN_ROOT}",
+        "fastmcp",
+        "run",
+        "fastmcp.json"
+      ],
+      "env": {
+        "CDP_URL": "http://127.0.0.1:9222",
+        "PYTHONUNBUFFERED": "1"
+      }
+    }
+  }
+}
