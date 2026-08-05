@@ -21,6 +21,7 @@ class VTableAutomationProvider(Provider):
             vtable_get_column_values_impl,
             vtable_get_row_count_impl,
             vtable_refresh_instance_impl,
+            vtable_resize_column_impl,
             vtable_scan_columns_impl,
             vtable_scroll_to_impl,
             vtable_select_rows_impl,
@@ -86,6 +87,11 @@ class VTableAutomationProvider(Provider):
                 vtable_drag_column_impl,
                 name="vtable_drag_column",
                 description="【真实鼠标拖拽】把 vtable 的 source 列拖到 target 列的前方(before)/后方(after)。完全复刻人工操作：先点击源列头中部使整列选中（VTable 拖拽启动前提），再按下鼠标分步拖拽到落点列松开。不使用任何实例 API 改列位置，仅用实例内部 API 读坐标与顺序做定位和验证；落点列由 VTable 原生语义自动计算（向右拖→目标列后方，向左拖→目标列前方）。source/target 支持列索引或字段名/列标题。返回拖拽前后列顺序、验证结果及 dragHeaderMode 等诊断信息；VTable 未开启列头拖拽(dragHeaderMode)或列级 dragHeader=false 时给出明确报错。",
+            ),
+            Tool.from_function(
+                vtable_resize_column_impl,
+                name="vtable_resize_column",
+                description="【真实鼠标拖拽】把 vtable 的 col 列宽调整到指定像素值 width。完全复刻人工操作：采集列头右边界分隔线位置（scenegraph 优先/getCellRect 兜底合成顶层视口坐标），按下鼠标分步缓动拖到目标位置后松开。不使用任何实例 API 改列宽（resizeColumn/updateColumns 等），仅用实例内部 API 读坐标/属性/配置做定位与验证；拖拽后自动重读列宽校验（误差≤2px）。col 支持列索引或字段名/列标题；自动校验 columnResize 能力开关与 min/max 列宽边界。返回拖拽前后列宽、拖拽点坐标及 resize 配置等诊断信息；VTable 未开启列宽调整(columnResize.resizable=false)时给出明确报错。",
             ),
         ]
 

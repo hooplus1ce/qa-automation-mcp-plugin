@@ -1100,6 +1100,122 @@ class VTableManager:
             ],
         }
 
+    async def resize_column(
+        self,
+        col: Union[int, str],
+        width: int,
+        iframe_selector: str = "div[aria-hidden=false] iframe",
+    ) -> Dict[str, Any]:
+        """
+        通过真实鼠标拖拽 VTable 列头分隔线，把指定列宽调整到目标像素值。
+
+        完全复刻人工操作 (canvas 渲染, 只能基于坐标 + 真实鼠标事件):
+          1. 采集列头矩形 (scenegraph 优先 / getCellRect 兜底, 合成顶层视口坐标)
+             → 分隔线 = 列头右边界 x2, 拖拽线 = 表头行中线 y
+          2. 悬停分隔线 → 按下鼠标不松 → 分步缓动移动到目标位置 (x1 + width) → 松开
+             (page.mouse down/move/up, 拖距 = 目标列宽 - 当前列宽)
+          3. 拖拽后重读列宽验证结果 (误差 ≤ 2px)
+
+        不使用任何 VTable 实例 API 修改列宽 (resizeColumn / updateColumns 等)，
+        仅用实例内部 API 读取坐标/属性/配置用于定位与验证 —— 与 vtable_drag_column
+        同一设计原则, 真实 UI 操作可复现到任何启用 columnResize 的 VTable。
+
+        col: 列索引 (int) 或字段名/列标题 (str)
+        width: 目标列宽 (px, 正数)
+        """
+        if not width or int(width) <= 0:
+            raise Exception(f"width 必须为正数 (px), 收到: {width}")
+        target_width = int(width)
+
+        await self.refresh_instance(iframe_selector)
+        frame = await self._get_target_frame(iframe_selector)
+        page = await browser_mgr.get_page()
+
+        # ---- 1. 采集列头几何 + 能力开关 (仅读) ----
+        geom = await _run_vtable_js(frame, f"getHeaderResizeGeometry({json.dumps(col)})")
+        if geom.get("error"):
+            raise Exception(geom["error"])
+
+        h = geom.get("header")
+        if not h:
+            raise Exception("无法获取列头矩形")
+        if not h.get("visible"):
+            raise Exception(
+                f"列头当前不可见 (横向视口外): col={geom['col']}({geom['field']}), "
+                f"请先横向滚动使该列可见后重试"
+            )
+
+        resize_cfg = geom.get("resize") or {}
+        if resize_cfg.get("resizeEnabled") is False:
+            raise Exception(
+                f"VTable 未开启列宽调整: columnResize.resizable=false "
+                f"(resize 配置={resize_cfg.get('resize')}), 无法拖拽调整列宽"
+            )
+        min_w = resize_cfg.get("minColumnWidth")
+        max_w = resize_cfg.get("maxColumnWidth")
+        if isinstance(min_w, (int, float)) and target_width < min_w:
+            raise Exception(f"目标宽度 {target_width}px 小于配置的最小列宽 {min_w}px")
+        if isinstance(max_w, (int, float)) and target_width > max_w:
+            raise Exception(f"目标宽度 {target_width}px 大于配置的最大列宽 {max_w}px")
+
+        cur_width = h["width"]
+        start_x = h["x2"]  # 分隔线 = 列头右边界
+        start_y = (h["y1"] + h["y2"]) / 2
+        target_x = h["x1"] + target_width
+        delta = target_x - start_x
+
+        # ---- 2. 真实交互: 悬停分隔线 → 按下 → 分步缓动拖动 → 松开 ----
+        logger.info(
+            f"[resize_column] col={geom['col']}({geom['field']}) "
+            f"width {cur_width}px -> {target_width}px "
+            f"drag ({start_x:.1f}, {start_y:.1f}) -> ({target_x:.1f}, {start_y:.1f})"
+        )
+        await page.mouse.move(start_x, start_y)
+        await asyncio.sleep(0.12)  # 悬停稳定, 让 VTable 进入 resize 判定区
+        await page.mouse.down()
+        await asyncio.sleep(0.12)
+        steps = 18
+        for i in range(1, steps + 1):
+            t_ratio = i / steps
+            eased = t_ratio * t_ratio * (3 - 2 * t_ratio)  # ease-in-out
+            await page.mouse.move(start_x + delta * eased, start_y)
+            await asyncio.sleep(0.04)
+        await asyncio.sleep(0.15)  # 落点悬停稳定 (VTable 渲染拖拽反馈)
+        await page.mouse.up()
+        await asyncio.sleep(0.5)
+
+        # ---- 3. 重读列宽验证 ----
+        after = await _run_vtable_js(frame, f"getColumnWidth({json.dumps(geom['col'])})")
+        after_w = (after or {}).get("width") if isinstance(after, dict) else None
+        if after_w is None:
+            raise Exception(f"拖拽后读取列宽失败: {after}")
+        ok = abs(after_w - target_width) <= 2
+        return {
+            "status": "success" if ok else "partial",
+            "col": geom["col"],
+            "field": geom["field"],
+            "title": geom["title"],
+            "width_before": cur_width,
+            "width_target": target_width,
+            "width_after": after_w,
+            "delta": round(delta, 1),
+            "drag_points": {
+                "start": {"x": round(start_x, 2), "y": round(start_y, 2)},
+                "end": {"x": round(target_x, 2), "y": round(start_y, 2)},
+            },
+            "resize_config": {
+                "columnResize": resize_cfg.get("columnResize"),
+                "resize": resize_cfg.get("resize"),
+                "columnResizeMode": resize_cfg.get("columnResizeMode"),
+            },
+            "verified": ok,
+            "message": (
+                f"列 [{geom['title']}] 列宽 {cur_width}px → {after_w}px "
+                f"(目标 {target_width}px): "
+                f"{'✅ 已生效' if ok else '⚠️ 未完全命中, 请检查 columnResize 配置/该列是否可调整'}"
+            ),
+        }
+
 vtable_mgr = VTableManager()
 
 # -------- 用于 Provider 注册的纯函数外壳 --------
@@ -1151,3 +1267,10 @@ async def vtable_drag_column_impl(
     iframe_selector: str = "div[aria-hidden=false] iframe",
 ) -> Dict[str, Any]:
     return await vtable_mgr.drag_column(source, target, position, iframe_selector)
+
+async def vtable_resize_column_impl(
+    col: Union[int, str],
+    width: int,
+    iframe_selector: str = "div[aria-hidden=false] iframe",
+) -> Dict[str, Any]:
+    return await vtable_mgr.resize_column(col, width, iframe_selector)

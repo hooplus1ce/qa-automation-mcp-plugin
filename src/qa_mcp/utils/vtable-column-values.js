@@ -569,3 +569,123 @@ function getColumnSelectionState(col) {
     })
   };
 }
+
+// ---- 列宽调整 (resize)：列头几何 + 能力开关 + 当前列宽 (供 vtable_resize_column 使用) ----
+// 与 getHeaderDragGeometry 同体系：全部通过实例内部 API 只读采集 (scenegraph 优先 /
+// getCellRect 兜底, 含 iframe + .vtable 容器偏移合成顶层视口坐标)，
+// 列宽变更完全交给真实鼠标拖拽触发 —— 分隔线 = 列头矩形右边界 (x2)。
+function getHeaderResizeGeometry(col) {
+  var t = window._vtable;
+  if (!t) return { error: 'window._vtable 未准备好' };
+  var headerLevel = t.columnHeaderLevelCount || 1;
+  var headerRow = Math.max(headerLevel - 1, 0);
+  var ifrRect = window.frameElement ? window.frameElement.getBoundingClientRect() : { left: 0, top: 0 };
+  var vtEl = _duVTableElement();
+  if (!vtEl) return { error: '未找到可见的 VTable 根元素' };
+  var vtRect = vtEl.getBoundingClientRect();
+  var canvas = t.container ? t.container.querySelector('canvas') : null;
+  if (!canvas) return { error: '未找到 VTable canvas' };
+  var cr = canvas.getBoundingClientRect();
+  var canvasViewportWidth = cr.width;
+
+  function cellViewport(c, row) {
+    try {
+      var cell = t.scenegraph && t.scenegraph.getCell ? t.scenegraph.getCell(c, row) : null;
+      if (cell && cell.globalAABBBounds && typeof cell.globalAABBBounds.x1 === 'number') {
+        var b = cell.globalAABBBounds;
+        return {
+          x1: ifrRect.left + vtRect.left + b.x1,
+          x2: ifrRect.left + vtRect.left + b.x2,
+          y1: ifrRect.top + vtRect.top + b.y1,
+          y2: ifrRect.top + vtRect.top + b.y2,
+          width: b.x2 - b.x1,
+          source: 'scenegraph'
+        };
+      }
+    } catch (e) {}
+    try {
+      var rect = t.getCellRect ? t.getCellRect(c, row) : null;
+      if (rect) {
+        var r = rect.bounds || rect;
+        return {
+          x1: ifrRect.left + cr.left + r.x1 - (t.scrollLeft || 0),
+          x2: ifrRect.left + cr.left + r.x2 - (t.scrollLeft || 0),
+          y1: ifrRect.top + cr.top + r.y1 - (t.scrollTop || 0),
+          y2: ifrRect.top + cr.top + r.y2 - (t.scrollTop || 0),
+          width: r.x2 - r.x1,
+          source: 'cellRect'
+        };
+      }
+    } catch (e) {}
+    return null;
+  }
+
+  function headerField(c) {
+    try { var f = t.getHeaderField ? t.getHeaderField(c, headerRow) : null; if (f !== null && f !== undefined) return String(f); } catch (e) {}
+    return '';
+  }
+  function headerTitle(c) {
+    var title = '';
+    try { var v = t.getCellValue ? t.getCellValue(c, headerRow) : null; if (v !== null && v !== undefined) title = v; } catch (e) {}
+    if (!title) { try { var d = t.getHeaderDefine ? t.getHeaderDefine(c, headerRow) : null; if (d) title = d.title || d.caption || ''; } catch (e) {} }
+    return typeof title === 'string' ? title : String(title);
+  }
+
+  var colCount = t.colCount || 0;
+  var resolved = null;
+  if (typeof col === 'number') {
+    resolved = (col >= 0 && col < colCount) ? col : null;
+  } else {
+    var s = String(col);
+    for (var c = 0; c < colCount; c++) {
+      if (headerField(c) === s || headerTitle(c) === s) { resolved = c; break; }
+    }
+  }
+  if (resolved === null) return { error: '未找到列: ' + col + ' (colCount=' + colCount + ', 可尝试列索引或先 vtable_scan_columns 查看列标题)' };
+
+  var h = cellViewport(resolved, headerRow);
+  if (!h) return { error: '无法获取列头矩形 (col=' + resolved + ')' };
+
+  var opts = t.options || {};
+  var colResizeOpt = opts.columnResize || {};
+  var resizeOpt = opts.resize || {};
+  var resizeEnabled = (typeof colResizeOpt.resizable === 'boolean') ? colResizeOpt.resizable
+    : ((typeof colResizeOpt.enable === 'boolean') ? colResizeOpt.enable : null);
+
+  return {
+    ok: true,
+    col: resolved,
+    field: headerField(resolved),
+    title: headerTitle(resolved),
+    headerRow: headerRow,
+    colCount: colCount,
+    canvasViewportWidth: _duRound(canvasViewportWidth),
+    // 列头矩形 (顶层视口坐标, 分隔线 = x2; visible 判定与 getHeaderDragGeometry 一致)
+    header: {
+      x1: _duRound(h.x1), x2: _duRound(h.x2),
+      y1: _duRound(h.y1), y2: _duRound(h.y2),
+      width: _duRound(h.width),
+      visible: h.x1 >= ifrRect.left + cr.left - 0.5 && h.x2 <= ifrRect.left + cr.left + canvasViewportWidth + 0.5,
+      source: h.source
+    },
+    // 列宽调整能力开关 (兼容新旧 VTable 配置: columnResize / resize)
+    resize: {
+      columnResize: colResizeOpt,
+      resize: resizeOpt,
+      resizeEnabled: resizeEnabled,
+      columnResizeMode: (resizeOpt.columnResizeMode !== undefined) ? resizeOpt.columnResizeMode : null,
+      canResize: (resizeOpt.canResize !== undefined) ? resizeOpt.canResize : null,
+      minColumnWidth: (colResizeOpt.minColumnWidth !== undefined) ? colResizeOpt.minColumnWidth
+        : ((resizeOpt.minColumnWidth !== undefined) ? resizeOpt.minColumnWidth : null),
+      maxColumnWidth: (colResizeOpt.maxColumnWidth !== undefined) ? colResizeOpt.maxColumnWidth
+        : ((resizeOpt.maxColumnWidth !== undefined) ? resizeOpt.maxColumnWidth : null)
+    }
+  };
+}
+
+// ---- 读取当前列宽 (拖拽后验证用, 与 getHeaderResizeGeometry.header.width 一致) ----
+function getColumnWidth(col) {
+  var g = getHeaderResizeGeometry(col);
+  if (g.error) return g;
+  return { ok: true, col: g.col, field: g.field, title: g.title, width: g.header.width, header: g.header };
+}
