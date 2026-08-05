@@ -71,11 +71,18 @@ def _resolve_image_url(image_arg: str) -> dict:
 def _extract_latest_pasted_image() -> Optional[Path]:
     """从 Claude Code 会话记录 jsonl 中提取最近一张粘贴的图片并保存到 EVIDENCE_DIR。"""
     project_parts = Path.cwd().resolve().parts
-    drive = project_parts[0][0].lower()
-    proj_dir_name = f"{drive}--" + "-".join(project_parts[1:])
+    drive = project_parts[0][0]
+    rest_path = "-".join(project_parts[1:])
 
-    session_dir = Path.home() / ".claude" / "projects" / proj_dir_name
-    if not session_dir.is_dir():
+    projects_base = Path.home() / ".claude" / "projects"
+    session_dir = None
+    for d_prefix in [drive.lower(), drive.upper()]:
+        candidate = projects_base / f"{d_prefix}--{rest_path}"
+        if candidate.is_dir():
+            session_dir = candidate
+            break
+
+    if not session_dir:
         return None
 
     session_files = sorted(

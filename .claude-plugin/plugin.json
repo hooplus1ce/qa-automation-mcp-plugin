@@ -5,6 +5,9 @@
   "author": {
     "name": "Hoolinks"
   },
+  "skills": [
+    "./skills/qa-automation-guide"
+  ],
   "mcpServers": {
     "qa-automation-mcp": {
       "command": "uv",

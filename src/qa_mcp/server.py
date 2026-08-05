@@ -89,7 +89,7 @@ async def server_lifespan(server: FastMCP) -> AsyncIterator[dict]:
 
 # 装配: 中间件 (日志在前, 串行锁包住整个工具执行, 日志仍按实际调用记录)
 # + 官方 Provider 组件集 (包含领域 Tools Provider 及 Agent Skills Resources Provider)
-skills_dir = Path(__file__).resolve().parents[2] / ".claude" / "skills"
+skills_dir = Path(__file__).resolve().parents[2] / "skills"
 
 mcp = FastMCP(
     "QA Automated Orchestrator",
