@@ -1,71 +1,213 @@
-# qa-automation-mcp-plugin
+# QA Automation MCP Plugin (Claude Code / Desktop 插件)
 
-SCM/MOM/WMS/ERP 企业级 Web 自动化测试 **Claude Code Plugin**：通过 Playwright CDP 接管本地 Chrome，提供页面元素分析、点击/输入/动作链、动态层探查、VTable 场景图交互、用例录制与 Shadcn 风格 Excel 资产导出（24 个 MCP 工具 + 测试设计 SOP 技能）。
+[![Python Version](https://img.shields.io/badge/python-3.11%20%7C%203.12%20%7C%203.13%20%7C%203.14-blue)](https://www.python.org/)
+[![FastMCP](https://img.shields.io/badge/FastMCP-3.4.4-green)](https://gofastmcp.com/)
+[![Playwright](https://img.shields.io/badge/Playwright-CDP-orange)](https://playwright.dev/)
+[![License](https://img.shields.io/badge/license-MIT-brightgreen)](#)
 
-## 目录结构
+企业级 Web 系统（SCM / MOM / WMS / ERP）自动化测试 **Claude Code & Claude Desktop 插件**。
+
+通过 Playwright CDP 接管本地物理 Chrome 浏览器，提供 DOM/iframe 语义分析、高韧性点击输入、批量动作链、VTable 场景图渲染层交互、动态浮层探查、测试用例实时录制以及 Shadcn 极简风格 Excel 报表与证据 JSON 一键落盘导出（内置 **24 个 MCP 工具** + **测试设计 SOP 技能指南**）。
+
+---
+
+## 目录
+
+- [核心架构设计与原理总结](#核心架构设计与原理总结)
+- [项目目录结构](#项目目录结构)
+- [前置条件与环境准备](#前置条件与环境准备)
+- [插件安装与使用 SOP](#插件安装与使用-sop)
+  - [方式一：Claude Desktop 导入 ZIP 插件包（推荐生产使用）](#方式一claude-desktop-导入-zip-插件包推荐生产使用)
+  - [方式二：Claude Code 插件加载与市场安装](#方式二claude-code-插件加载与市场安装)
+  - [方式三：常规 MCP 客户端直接接入（Cursor / VS Code / Claude Desktop 手动配置）](#方式三常规-mcp-客户端直接接入cursor--vs-code--claude-desktop-手动配置)
+- [MCP 工具与 SOP 技能清单](#mcp-工具与-sop-技能清单)
+- [开发验证与单元测试](#开发验证与单元测试)
+
+---
+
+## 核心架构设计与原理总结
+
+在项目设计与优化过程中，针对 MCP 插件的生命周期、环境打包、变量注入与启动性能得出了以下核心架构原理与结论：
+
+### 1. 无需打包 `.venv` 的“现场自动建环”机制
+- **零体积发布**：分发 Zip 插件包时**绝对不需要**包含庞大的 `.venv` 虚拟环境，打出的插件 Zip 包体积仅 **~200 KB**。
+- **外层 `uv run` 负责环境感知与现场构建**：当 MCP 客户端启动插件时，命令最外层的 `uv run` 会首先检查插件目录下是否存在 `.venv`。若不存在，`uv` 会读取 `fastmcp.json` / `pyproject.toml` 依赖声明，在目标机器上自动下载 Python 环境并瞬间构建虚拟环境、安装依赖。
+- **内层 `--skip-env` 防止二次建环死循环**：子命令 `fastmcp run --skip-env fastmcp.json` 中的 `--skip-env` 标志用于告知 FastMCP 内部 CLI 引擎：*“外层 `uv` 已经完成了虚拟环境的创建与激活，FastMCP 无需在内部重复拉起 `uv` 嵌套构建”*。此举杜绝了死循环，并将服务启动耗时缩短至毫秒级。
+
+### 2. `.claude-plugin/plugin.json` 与 `.mcp.json` 的双模协同
+项目同时提供了两套配置文件，分别精准适配不同的运行模式：
+
+| 配置文件 | 适用场景 | `${CLAUDE_PLUGIN_ROOT}` 变量 | 原理解析 |
+| :--- | :--- | :--- | :--- |
+| **`.claude-plugin/plugin.json`** | 插件安装/分发模式 | **保留使用** | 当用户通过插件机制安装时，Claude Code 插件引擎会自动注入 `${CLAUDE_PLUGIN_ROOT}` 动态环境变量，指向插件被解压挂载的绝对路径。 |
+| **根目录 `.mcp.json`** | 本地源码开发调试 | **不使用（直接运行）** | 在开发者直接打开本仓库进行源码调试时，不存在插件安装上下文，环境变量未注入。`.mcp.json` 默认在当前工作区根目录执行，避免因路径变量为空导致 `uv` 报 `directory cannot be empty` 崩溃。 |
+
+### 3. 全面支持 Python 3.14 稳定版与向下兼容
+- 项目依赖规范配置为 `requires-python = ">=3.11"`（`pyproject.toml`）与 `"python": ">=3.11"`（`fastmcp.json`）。
+- 完全支持已正式发布的 **Python 3.14 稳定版**，同时对 Python 3.11 / 3.12 / 3.13 保持向下兼容。
+
+---
+
+## 项目目录结构
 
 ```text
 qa-automation-mcp-plugin/
 ├── .claude-plugin/
-│   ├── plugin.json           # 插件清单 (定义名称、版本、mcpServers 与 skills 映射，使用 ${CLAUDE_PLUGIN_ROOT})
-│   └── marketplace.json      # 插件市场注册清单 (定义插件源与元数据)
-├── .mcp.json                 # 本地工作区 MCP 配置文件 (开发者直接在本项目中调试使用)
-├── fastmcp.json              # FastMCP 声明式服务与依赖配置
-├── pyproject.toml            # 项目依赖声明 (支持 Python >=3.11 及 Python 3.14 稳定版)
-├── src/qa_mcp/               # MCP 服务源码 (Provider/Tools/Middleware/Lifespan)
+│   ├── plugin.json           # 插件主清单 (定义名称、版本、mcpServers 与 skills 显式映射)
+│   └── marketplace.json      # 插件市场注册清单 (定义 Marketplace 索引与 GitHub 源码源)
+├── .mcp.json                 # 工作区 MCP 配置 (用于开发者在本项目根目录下直接调试)
+├── fastmcp.json              # FastMCP 声明式服务、入口与依赖配置
+├── pyproject.toml            # Hatchling 构建与项目依赖声明 (包含 pytest 开发依赖组)
+├── .env.example              # 环境变量配置模板
 ├── skills/
-│   └── qa-automation-guide/  # SCM/MOM/WMS/ERP 测试设计 SOP 技能指南
-└── tests/                    # 单元测试 (76 个测试用例)
+│   └── qa-automation-guide/
+│       └── SKILL.md          # SCM/MOM/WMS/ERP Web 自动化测试 SOP 技能指南
+├── src/qa_mcp/               # FastMCP 3.x 服务源码
+│   ├── server.py             # 服务装配入口 (Lifespan, Middleware, Provider 与导出工具)
+│   ├── config.py             # 统一超时、轮询与环境变量配置
+│   ├── providers/            # FastMCP Provider 扩展 (BrowserProvider, VTableProvider)
+│   ├── tools/                # 24 个 MCP 核心工具实现 (browser, vtable, recorder, vision 等)
+│   └── utils/                # UI 组件适配器、场景图 JS 注入脚本与 Shadcn Excel 渲染器
+└── tests/                    # 单元测试套件 (76 个自动化测试用例)
 ```
 
-## 前置条件
+---
 
-1. 已安装 [Claude Code](https://code.claude.com) / [Claude Desktop](https://claude.ai/download) 与 [uv](https://docs.astral.sh/uv/) (支持 Python >=3.11，包含 Python 3.14 稳定版)。
-2. 本地 Chrome 以调试端口启动：
+## 前置条件与环境准备
+
+1. **安装必要工具**：
+   - 已安装 [Claude Code](https://code.claude.com) 或 [Claude Desktop](https://claude.ai/download)。
+   - 已安装 [uv](https://docs.astral.sh/uv/)（Python 包与环境管理工具）。
+   - 环境支持 Python 3.11、3.12、3.13 或 **3.14+**。
+
+2. **启动本地物理 Chrome 远程调试端口**：
+   Playwright CDP 需连接至开启调试端口的 Chrome 实例，在终端运行：
+   - **Windows**:
+     ```cmd
+     chrome.exe --remote-debugging-port=9222 --user-data-dir="C:\Temp\ChromeDebugProfile"
+     ```
+   - **macOS**:
+     ```bash
+     /Applications/Google\ Chrome.app/Contents/MacOS/Google\ Chrome --remote-debugging-port=9222 --user-data-dir="/tmp/ChromeDebugProfile"
+     ```
+
+3. **配置环境变量（可选）**：
+   复制项目模板并根据需要调整配置：
    ```bash
-   chrome.exe --remote-debugging-port=9222 --user-data-dir="C:\Temp\ChromeDebugProfile"
+   cp .env.example .env
    ```
-3. （可选）在 `.env` 中配置 `MIMO_API_KEY` 以启用视觉降级识别工具。
+   - `CDP_URL`: Chrome CDP 调试地址（默认 `http://127.0.0.1:9222`）。
+   - `VISUAL_EFFECTS`: 是否开启鼠标点击与定位框可视化高亮（默认 `true`）。
+   - `MIMO_API_KEY`: 小米 MiMo-V2.5 视觉 API Key（仅当主模型为纯文本模型需要图像理解降级时配置）。
 
-## 安装与使用
+---
 
-### 方式一：Claude Desktop / Claude Code 导入 Zip 插件包（推荐生产使用）
+## 插件安装与使用 SOP
 
-1. 项目仅需打包源码文件（无需打包 `.venv` 虚拟环境，压缩包仅 200KB 左右）。
-2. 在 Claude Desktop 中导入 zip 插件包或添加 Marketplace。
-3. **自动建环机制**：外层 `uv run` 会在首次运行时根据 `fastmcp.json` / `pyproject.toml` 自动下载 Python 并构建 `.venv`；内层的 `--skip-env` 标志确保在已准备好的环境中毫秒级拉起 FastMCP 服务，无需手工执行 `uv sync`。
+### 方式一：Claude Desktop 导入 ZIP 插件包（推荐生产使用）
 
-### 方式二：本地目录直接加载（插件开发调试）
+1. **打包插件（开发者）**：
+   直接将项目根目录下除 `.venv`、`__pycache__` 外的文件打包为 `qa-automation-mcp-plugin.zip`（体积约 200KB）。
+2. **导入 Claude Desktop**：
+   - 打开 Claude Desktop $\rightarrow$ 设置 $\rightarrow$ Plugins / MCP Servers $\rightarrow$ 选择导入 `qa-automation-mcp-plugin.zip`。
+3. **自动运行**：
+   - Claude Desktop 会解压插件到本地插件目录。
+   - 首次触发时外层 `uv run` 自动建环并安装依赖，内层 `--skip-env` 快速调起 MCP 服务。
 
-```bash
-claude --plugin-dir ./qa-automation-mcp-plugin
-```
+### 方式二：Claude Code 插件加载与市场安装
 
-### 方式三：常规 MCP 接入（工作区直接调试）
+- **本地开发调试**：
+  在 Claude Code 中直接指定插件目录运行：
+  ```bash
+  claude --plugin-dir ./qa-automation-mcp-plugin
+  ```
+- **通过 Marketplace 安装**：
+  在 Claude Code 中添加市场并安装：
+  ```bash
+  /plugin marketplace add hooplus1ce/qa-automation-mcp-plugin
+  /plugin install qa-automation
+  ```
 
-在目标项目的 `.mcp.json` 中配置：
+### 方式三：常规 MCP 客户端直接接入（Cursor / VS Code / Claude Desktop 手动配置）
+
+若不使用插件包装机制，可以直接在客户端配置（如 `~/.claude/claude_desktop_config.json` 或 `.cursor/mcp.json`）中添加 `mcpServers`：
 
 ```json
 {
   "mcpServers": {
     "qa-automation-mcp": {
       "command": "uv",
-      "args": ["run", "fastmcp", "run", "--skip-env", "fastmcp.json"],
-      "env": { "CDP_URL": "http://127.0.0.1:9222" }
+      "args": [
+        "run",
+        "--directory",
+        "/绝对路径/到/qa-automation-mcp-plugin",
+        "fastmcp",
+        "run",
+        "--skip-env",
+        "fastmcp.json"
+      ],
+      "env": {
+        "CDP_URL": "http://127.0.0.1:9222",
+        "PYTHONUNBUFFERED": "1"
+      }
     }
   }
 }
 ```
-## 验证
+
+---
+
+## MCP 工具与 SOP 技能清单
+
+项目共装配 **24 个 MCP 核心工具** 及 **1 个企业级 Web 测试设计 SOP 技能**：
+
+### 1. 基础页面分析与交互工具 (11 个)
+- `analyze_current_page`: 递归分析 DOM 及嵌套 iframe，生成可见交互元素定位器。
+- `click_interact`: 统一点击工具（支持 CSS/XPath、get_by_role 语义定位、视口坐标点击，附带弹窗浮层与跳转观察）。
+- `fill_input`: 文本框填充（支持清空、逐字模拟键盘输入、回车触发）。
+- `execute_action_chain`: 批量动作链顺序执行（含 fallback 变体容错与降级机制）。
+- `probe_dynamic_layers`: 探查页面/iframe 出现的可见弹窗、下拉悬浮层及消息气泡。
+- `wait_for_condition`: 页面条件轮询等待（文本出现/元素可见/URL跳转）。
+- `capture_screenshot`: CDP 原生无卡顿截屏（支持整页或视口，生成 PNG 及文件凭证）。
+- `switch_target_page`: 显式重绑/锁定 MCP 操作的目标标签页。
+- `mimo_describe_image`: 纯文本主模型环境下的视觉理解降级工具。
+- `start_recording`: 初始化测试用例录制会话。
+- `execute_and_record`: 执行动作并自动记录最优高韧性语义定位步骤。
+
+### 2. VTable 场景图表格交互工具 (12 个)
+- `vtable_refresh_instance`: 挂载并刷新 Canvas 渲染表格的 `window._vtable` 实例。
+- `vtable_analyze_headers`: 【场景图驱动】分析列头图标与单元格交互组件。
+- `vtable_scan_columns`: 【推荐】扫描全部列头及视口坐标（直接传给坐标点击）。
+- `vtable_get_row_count`: 获取表格纯数据总行数。
+- `vtable_get_all_records`: 一次性读取整表后台行记录 JSON。
+- `vtable_get_cell_text`: 读取指定单元格展示文本（可读取场景图渲染层）。
+- `vtable_get_column_values`: 按中文列标题批量提取列数据。
+- `vtable_get_cell_render_info`: 读取单元格场景图渲染详情（颜色/背景色/字体/节点）。
+- `vtable_get_cell_center`: 计算单元格中心顶层视口坐标。
+- `vtable_scroll_to`: 精确滚动 VTable 表格到指定行/列/坐标。
+- `vtable_select_rows`: 勾选/取消勾选 Canvas 表格多行复选框。
+- `vtable_drag_column`: 复刻真实鼠标拖拽移动 VTable 列位置。
+
+### 3. 会话导出工具 (1 个)
+- `export_session`: 结束录制，生成证据 JSON 资产并落盘 Shadcn 极简风格 Excel 报表。
+
+### 4. Agent SOP 技能
+- `qa-automation-guide`: 提供 SCM/MOM/WMS/ERP 测试矩阵设计模式（Pattern A~E）及 UI 框架穿透路由标准。
+
+---
+
+## 开发验证与单元测试
+
+在项目修改或扩展后，请执行以下命令进行完整验证：
 
 ```bash
-# 校验插件清单与市场清单
+# 1. 验证 Claude Plugin 清单格式与 Marketplace 架构
 claude plugin validate .
 claude plugin validate .claude-plugin/plugin.json
 
-# 列出 MCP 工具 (包含 24 个工具 + Skills Provider)
+# 2. 检查 FastMCP 服务工具装配与状态
 uv run fastmcp list src/qa_mcp/server.py
 
-# 运行单元测试
+# 3. 运行自动化单元测试套件 (包含 76 个测试用例)
 uv run pytest
 ```
