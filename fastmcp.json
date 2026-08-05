@@ -5,6 +5,18 @@
     "path": "src/qa_mcp/server.py",
     "entrypoint": "mcp"
   },
+  "environment": {
+    "type": "uv",
+    "python": ">=3.14",
+    "dependencies": [
+      "fastmcp[apps]==3.4.4",
+      "playwright>=1.60",
+      "openpyxl>=3.1.5",
+      "pydantic>=2.10.0",
+      "python-dotenv>=1.0.0",
+      "openai>=2.53.0"
+    ]
+  },
   "deployment": {
     "transport": "stdio",
     "log_level": "INFO"
