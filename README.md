@@ -34,14 +34,9 @@
 - **外层 `uv run` 负责环境感知与现场构建**：当 MCP 客户端启动插件时，命令最外层的 `uv run` 会首先检查插件目录下是否存在 `.venv`。若不存在，`uv` 会读取 `fastmcp.json` / `pyproject.toml` 依赖声明，在目标机器上自动下载 Python 环境并瞬间构建虚拟环境、安装依赖。
 - **内层 `--skip-env` 防止二次建环死循环**：子命令 `fastmcp run --skip-env fastmcp.json` 中的 `--skip-env` 标志用于告知 FastMCP 内部 CLI 引擎：*“外层 `uv` 已经完成了虚拟环境的创建与激活，FastMCP 无需在内部重复拉起 `uv` 嵌套构建”*。此举杜绝了死循环，并将服务启动耗时缩短至毫秒级。
 
-### 2. `.claude-plugin/plugin.json` 与 `.mcp.json` 的双模协同
-项目同时提供了两套配置文件，分别精准适配不同的运行模式：
-
-| 配置文件 | 适用场景 | `${CLAUDE_PLUGIN_ROOT}` 变量 | 原理解析 |
-| :--- | :--- | :--- | :--- |
-| **`.claude-plugin/plugin.json`** | 插件安装/分发模式 | **保留使用** | 当用户通过插件机制安装时，Claude Code 插件引擎会自动注入 `${CLAUDE_PLUGIN_ROOT}` 动态环境变量，指向插件被解压挂载的绝对路径。 |
-| **根目录 `.mcp.json`** | 本地源码开发调试 | **不使用（直接运行）** | 在开发者直接打开本仓库进行源码调试时，不存在插件安装上下文，环境变量未注入。`.mcp.json` 默认在当前工作区根目录执行，避免因路径变量为空导致 `uv` 报 `directory cannot be empty` 崩溃。 |
-
+### 2. 插件全局挂载与 `${CLAUDE_PLUGIN_ROOT}` 路径寻址
+- **解决 `not loaded` 的关键**：在 Claude Code / Claude Desktop 插件体系中，用户安装插件后，插件文件解压挂载在插件系统的全局路径下（如 `~/.claude/plugins/qa-automation/`）。当用户在任意其他工作区目录使用该插件时，如果没有指定 `--directory "${CLAUDE_PLUGIN_ROOT}"`，`uv` 会在用户当前工作区寻找 `fastmcp.json`，从而导致找不到配置文件并引发 **`qa-automation-mcp: not loaded`** 加载失败。
+- **`${CLAUDE_PLUGIN_ROOT}` 自动注入与挂载**：在 `.claude-plugin/plugin.json` 与 `.mcp.json` 中配置 `--directory "${CLAUDE_PLUGIN_ROOT}"`，确保了无论用户在电脑上的哪个项目路径下触发插件，`uv` 都能准确跳至插件的实际安装根目录去加载 `fastmcp.json` 并激活环境，实现跨目录、跨项目的全局无缝调用。
 ### 3. 全面支持 Python 3.14 稳定版与向下兼容
 - 项目依赖规范配置为 `requires-python = ">=3.11"`（`pyproject.toml`）与 `"python": ">=3.11"`（`fastmcp.json`）。
 - 完全支持已正式发布的 **Python 3.14 稳定版**，同时对 Python 3.11 / 3.12 / 3.13 保持向下兼容。

@@ -4,6 +4,8 @@
       "command": "uv",
       "args": [
         "run",
+        "--directory",
+        "${CLAUDE_PLUGIN_ROOT}",
         "fastmcp",
         "run",
         "--skip-env",
