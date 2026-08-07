@@ -66,6 +66,8 @@ dmypy.json
 .env
 .env.*
 !.env.example
+# 本地 MCP 配置 (含 tencent-docs 个人 token, 不提交)
+.mcp.json
 .venv/
 venv/
 ENV/

@@ -16,6 +16,8 @@ VISUAL_EFFECTS = os.getenv("VISUAL_EFFECTS", "0").strip().lower() in (
 )
 EVIDENCE_DIR = "evidence_assets"
 OUTPUT_DIR = "output_testcases"
+# download_file 工具默认下载保存目录 (相对 MCP 服务启动目录=项目根)
+DOWNLOAD_DIR = os.getenv("DOWNLOAD_DIR", "downloads")
 
 
 # ==================== 时序/等待参数 (统一调优成功率) ====================

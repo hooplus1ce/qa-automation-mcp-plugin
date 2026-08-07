@@ -661,6 +661,30 @@ DRAG_GEOM_BEFORE = dict(
 NO_ICONS = {"ok": True, "count": 0, "icons": []}
 
 
+RESIZE_GEOM = {
+    "ok": True,
+    "col": 1,
+    "field": "B",
+    "title": "乙",
+    "headerRow": 0,
+    "colCount": 6,
+    "canvasViewportWidth": 800,
+    "header": {"x1": 400.0, "x2": 500.0, "y1": 100.0, "y2": 140.0, "width": 100.0, "visible": True, "source": "scenegraph"},
+    "resize": {
+        "columnResize": {"resizable": True},
+        "resize": {},
+        "resizeEnabled": True,
+        "columnResizeMode": None,
+        "canResize": None,
+        "minColumnWidth": None,
+        "maxColumnWidth": None,
+    },
+}
+
+AFTER_WIDTH_OK = {"ok": True, "col": 1, "field": "B", "title": "乙", "width": 160.0, "header": RESIZE_GEOM["header"]}
+AFTER_WIDTH_OFF = {"ok": True, "col": 1, "field": "B", "title": "乙", "width": 165.0, "header": RESIZE_GEOM["header"]}
+
+
 class VTableDragColumnTests(unittest.IsolatedAsyncioTestCase):
     """vtable_drag_column: 真实鼠标拖拽列头换位 (先点击整列选中 → 按下 → 分步拖拽 → 松开)"""
 
@@ -783,6 +807,119 @@ class VTableDragColumnTests(unittest.IsolatedAsyncioTestCase):
         self.assertAlmostEqual(first_x, 425.0, places=2)
         self.assertAlmostEqual(first_y, 120.0, places=2)
         self.assertEqual(result["verification"]["ok"], True)
+
+
+class VTableResizeColumnTests(unittest.IsolatedAsyncioTestCase):
+    """vtable_resize_column: 真实鼠标拖拽列头分隔线调整列宽 (悬停 → 按下 → 分步缓动 → 松开 → 验证)"""
+
+    def _make_mgr(self, frame_results):
+        mgr = VTableManager()
+        mgr.refresh_instance = AsyncMock()
+        frame = FakeFrame(frame_results)
+        mgr._get_target_frame = AsyncMock(return_value=frame)
+        page = FakePage(IFRAME_RECT)
+        patcher = patch("qa_mcp.tools.vtable.browser_mgr.get_page", return_value=page)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        return mgr, page
+
+    async def test_drag_divider_to_target_width_drives_mouse_and_verifies(self):
+        """完整流程: 采集几何 → 悬停分隔线按下 → 18 步缓动拖到目标宽度 → 松开 → 重读列宽验证"""
+        mgr, page = self._make_mgr([RESIZE_GEOM, AFTER_WIDTH_OK])
+
+        result = await mgr.resize_column("乙", 160)
+
+        # 1 次初始悬停定位 + 18 步缓动; 最后一步落在 (x1 + 目标宽度) = 400 + 160
+        self.assertEqual(page.mouse.move.await_count, 19)
+        first_x, first_y = page.mouse.move.await_args_list[0].args
+        self.assertAlmostEqual(first_x, 500.0, places=2)  # 分隔线 = 列头右边界 x2
+        self.assertAlmostEqual(first_y, 120.0, places=2)  # 表头行中线
+        last_x, last_y = page.mouse.move.await_args.args
+        self.assertAlmostEqual(last_x, 560.0, places=2)
+        self.assertAlmostEqual(last_y, 120.0, places=2)
+        page.mouse.down.assert_awaited_once()
+        page.mouse.up.assert_awaited_once()
+        # 结果: 列宽 100 -> 160, 误差 0 ≤ 2px → success
+        self.assertEqual(result["status"], "success")
+        self.assertEqual(result["width_before"], 100.0)
+        self.assertEqual(result["width_after"], 160.0)
+        self.assertEqual(result["delta"], 60.0)
+        self.assertTrue(result["verified"])
+        self.assertEqual(result["drag_points"]["start"], {"x": 500.0, "y": 120.0})
+        self.assertEqual(result["drag_points"]["end"], {"x": 560.0, "y": 120.0})
+
+    async def test_partial_when_after_width_outside_2px_tolerance(self):
+        """拖拽后重读列宽与目标偏差 > 2px 时返回 partial 而非 success"""
+        mgr, page = self._make_mgr([RESIZE_GEOM, AFTER_WIDTH_OFF])
+
+        result = await mgr.resize_column("乙", 160)
+
+        self.assertEqual(result["status"], "partial")
+        self.assertFalse(result["verified"])
+        self.assertEqual(result["width_after"], 165.0)
+
+    async def test_raises_when_column_resize_disabled(self):
+        """VTable 未开启列宽调整 (columnResize.resizable=false) 时明确报错且不产生鼠标事件"""
+        geom = dict(RESIZE_GEOM)
+        geom["resize"] = dict(RESIZE_GEOM["resize"], resizeEnabled=False)
+        mgr, page = self._make_mgr([geom])
+
+        with self.assertRaisesRegex(Exception, "columnResize.resizable=false"):
+            await mgr.resize_column("乙", 160)
+
+        page.mouse.down.assert_not_awaited()
+
+    async def test_raises_when_width_below_min_column_width(self):
+        """目标宽度小于配置的 minColumnWidth 时拒绝拖拽"""
+        geom = dict(RESIZE_GEOM)
+        geom["resize"] = dict(RESIZE_GEOM["resize"], minColumnWidth=120)
+        mgr, page = self._make_mgr([geom])
+
+        with self.assertRaisesRegex(Exception, "最小列宽"):
+            await mgr.resize_column("乙", 100)
+
+        page.mouse.down.assert_not_awaited()
+
+    async def test_raises_when_width_above_max_column_width(self):
+        """目标宽度大于配置的 maxColumnWidth 时拒绝拖拽"""
+        geom = dict(RESIZE_GEOM)
+        geom["resize"] = dict(RESIZE_GEOM["resize"], maxColumnWidth=150)
+        mgr, page = self._make_mgr([geom])
+
+        with self.assertRaisesRegex(Exception, "最大列宽"):
+            await mgr.resize_column("乙", 200)
+
+        page.mouse.down.assert_not_awaited()
+
+    async def test_raises_when_header_not_visible(self):
+        """列头在横向视口外时给出滚动提示, 不拖拽"""
+        geom = dict(RESIZE_GEOM)
+        geom["header"] = dict(RESIZE_GEOM["header"], visible=False)
+        mgr, page = self._make_mgr([geom])
+
+        with self.assertRaisesRegex(Exception, "横向视口外"):
+            await mgr.resize_column("乙", 160)
+
+        page.mouse.down.assert_not_awaited()
+
+    async def test_raises_on_non_positive_width_without_browser_access(self):
+        """width 非法 (0/负数) 时在最前置校验拒绝, 不触碰浏览器"""
+        mgr = VTableManager()
+        mgr.refresh_instance = AsyncMock()
+
+        with self.assertRaisesRegex(Exception, "width 必须为正数"):
+            await mgr.resize_column("乙", 0)
+
+        mgr.refresh_instance.assert_not_awaited()
+
+    async def test_raises_when_column_not_resolved(self):
+        """JS 侧找不到列时透传明确报错"""
+        mgr, page = self._make_mgr([{"error": "未找到列: X (colCount=6, 可尝试列索引或先 vtable_scan_columns 查看列标题)"}])
+
+        with self.assertRaisesRegex(Exception, "未找到列"):
+            await mgr.resize_column("不存在列", 160)
+
+        page.mouse.down.assert_not_awaited()
 
 
 class CaptureScreenshotTests(unittest.IsolatedAsyncioTestCase):

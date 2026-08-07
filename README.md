@@ -7,7 +7,7 @@
 
 企业级 Web 系统（SCM / MOM / WMS / ERP）自动化测试 **Claude Code & Claude Desktop 插件**。
 
-通过 Playwright CDP 接管本地物理 Chrome 浏览器，提供 DOM/iframe 语义分析、高韧性点击输入、批量动作链、VTable 场景图渲染层交互、动态浮层探查、测试用例实时录制以及 Shadcn 极简风格 Excel 报表与证据 JSON 一键落盘导出（内置 **24 个 MCP 工具** + **测试设计 SOP 技能指南**）。
+通过 Playwright CDP 接管本地物理 Chrome 浏览器，提供 DOM/iframe 语义分析、高韧性点击输入、批量动作链、VTable 场景图渲染层交互、动态浮层探查、测试用例实时录制、文件下载/上传控制以及 Shadcn 极简风格 Excel 报表与证据 JSON 一键落盘导出（内置 **27 个 MCP 工具** + **测试设计 SOP 技能指南**）。
 
 ---
 
@@ -61,9 +61,9 @@ qa-automation-mcp-plugin/
 │   ├── server.py             # 服务装配入口 (Lifespan, Middleware, Provider 与导出工具)
 │   ├── config.py             # 统一超时、轮询与环境变量配置
 │   ├── providers/            # FastMCP Provider 扩展 (BrowserProvider, VTableProvider)
-│   ├── tools/                # 24 个 MCP 核心工具实现 (browser, vtable, recorder, vision 等)
+│   ├── tools/                # 25 个 MCP 核心工具实现 (browser, vtable, recorder, vision 等)
 │   └── utils/                # UI 组件适配器、场景图 JS 注入脚本与 Shadcn Excel 渲染器
-└── tests/                    # 单元测试套件 (76 个自动化测试用例)
+└── tests/                    # 单元测试套件 (112 个自动化测试用例)
 ```
 
 ---
@@ -93,7 +93,7 @@ qa-automation-mcp-plugin/
    ```
    - `CDP_URL`: Chrome CDP 调试地址（默认 `http://127.0.0.1:9222`）。
    - `VISUAL_EFFECTS`: 是否开启鼠标点击与定位框可视化高亮（默认 `true`）。
-   - `MIMO_API_KEY`: 小米 MiMo-V2.5 视觉 API Key（仅当主模型为纯文本模型需要图像理解降级时配置）。
+   - `VISION_API_KEY`: 腾讯云 TokenHub GLM-5V 视觉 API Key（仅当主模型为纯文本模型需要图像理解降级时配置）。
 
 ---
 
@@ -154,22 +154,24 @@ qa-automation-mcp-plugin/
 
 ## MCP 工具与 SOP 技能清单
 
-项目共装配 **24 个 MCP 核心工具** 及 **1 个企业级 Web 测试设计 SOP 技能**：
+项目共装配 **27 个 MCP 核心工具** 及 **1 个企业级 Web 测试设计 SOP 技能**：
 
-### 1. 基础页面分析与交互工具 (11 个)
+### 1. 基础页面分析与交互工具 (13 个)
 - `analyze_current_page`: 递归分析 DOM 及嵌套 iframe，生成可见交互元素定位器。
 - `click_interact`: 统一点击工具（支持 CSS/XPath、get_by_role 语义定位、视口坐标点击，附带弹窗浮层与跳转观察）。
 - `fill_input`: 文本框填充（支持清空、逐字模拟键盘输入、回车触发）。
 - `execute_action_chain`: 批量动作链顺序执行（含 fallback 变体容错与降级机制）。
 - `probe_dynamic_layers`: 探查页面/iframe 出现的可见弹窗、下拉悬浮层及消息气泡。
 - `wait_for_condition`: 页面条件轮询等待（文本出现/元素可见/URL跳转）。
+- `download_file`: 点击触发下载的按钮/链接，下载文件落盘到指定目录（默认 ./downloads）并验证，供后续读取分析（如 xlsx 用 pandas 编辑）。
+- `upload_file`: 点击上传按钮/输入框注入指定文件（input 直设或 filechooser 拦截），可选等待"上传成功"反馈验证。
 - `capture_screenshot`: CDP 原生无卡顿截屏（支持整页或视口，生成 PNG 及文件凭证）。
 - `switch_target_page`: 显式重绑/锁定 MCP 操作的目标标签页。
-- `mimo_describe_image`: 纯文本主模型环境下的视觉理解降级工具。
+- `describe_image`: 纯文本主模型环境下的视觉理解降级工具（GLM-5V 流式解析，返回思考过程与回答）。
 - `start_recording`: 初始化测试用例录制会话。
 - `execute_and_record`: 执行动作并自动记录最优高韧性语义定位步骤。
 
-### 2. VTable 场景图表格交互工具 (12 个)
+### 2. VTable 场景图表格交互工具 (13 个)
 - `vtable_refresh_instance`: 挂载并刷新 Canvas 渲染表格的 `window._vtable` 实例。
 - `vtable_analyze_headers`: 【场景图驱动】分析列头图标与单元格交互组件。
 - `vtable_scan_columns`: 【推荐】扫描全部列头及视口坐标（直接传给坐标点击）。
@@ -182,6 +184,7 @@ qa-automation-mcp-plugin/
 - `vtable_scroll_to`: 精确滚动 VTable 表格到指定行/列/坐标。
 - `vtable_select_rows`: 勾选/取消勾选 Canvas 表格多行复选框。
 - `vtable_drag_column`: 复刻真实鼠标拖拽移动 VTable 列位置。
+- `vtable_resize_column`: 复刻真实鼠标拖拽 VTable 列头分隔线调整列宽（拖后自动校验）。
 
 ### 3. 会话导出工具 (1 个)
 - `export_session`: 结束录制，生成证据 JSON 资产并落盘 Shadcn 极简风格 Excel 报表。
@@ -203,6 +206,6 @@ claude plugin validate .claude-plugin/plugin.json
 # 2. 检查 FastMCP 服务工具装配与状态
 uv run fastmcp list src/qa_mcp/server.py
 
-# 3. 运行自动化单元测试套件 (包含 76 个测试用例)
+# 3. 运行自动化单元测试套件 (包含 112 个测试用例)
 uv run pytest
 ```

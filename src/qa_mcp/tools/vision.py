@@ -1,12 +1,13 @@
-"""小米 MiMo-V2.5 视觉理解降级工具模块。"""
+"""GLM-5V 视觉理解降级工具模块 (腾讯云 TokenHub OpenAI 兼容接口, 流式 + 思考过程)。"""
 
+import asyncio
 import base64
 import json
 import logging
 import mimetypes
 import os
 from pathlib import Path
-from typing import List, Optional
+from typing import List, Optional, Tuple
 
 from openai import OpenAI
 
@@ -14,8 +15,9 @@ from qa_mcp.config import EVIDENCE_DIR
 
 logger = logging.getLogger("mcp_automation.vision")
 
-API_BASE = "https://api.xiaomimimo.com/v1"
-MODEL = "mimo-v2.5"
+API_BASE = "https://tokenhub.tencentmaas.com/v1"
+MODEL = "glm-5v-turbo"
+MAX_TOKENS = 2048
 MAX_IMAGE_BYTES = 50 * 1024 * 1024
 SUPPORTED_MIME = {
     "image/jpeg",
@@ -34,8 +36,8 @@ MIME_EXT = {
 
 
 def _load_api_key() -> str:
-    """读取 MIMO_API_KEY: 环境变量 > 项目 .env。"""
-    key = os.environ.get("MIMO_API_KEY", "").strip()
+    """读取 VISION_API_KEY: 环境变量 > 项目 .env。"""
+    key = os.environ.get("VISION_API_KEY", "").strip()
     if key:
         return key
     for base in (Path.cwd(), Path(__file__).resolve().parents[3]):
@@ -43,7 +45,7 @@ def _load_api_key() -> str:
         if env_file.is_file():
             for line in env_file.read_text(encoding="utf-8").splitlines():
                 line = line.strip()
-                if line.startswith("MIMO_API_KEY="):
+                if line.startswith("VISION_API_KEY="):
                     return line.split("=", 1)[1].strip().strip('"').strip("'")
     return ""
 
@@ -121,18 +123,77 @@ def _extract_latest_pasted_image() -> Optional[Path]:
     return None
 
 
-async def mimo_describe_image_impl(
+def _stream_vision_completion(
+    api_key: str,
+    image_urls: List[dict],
+    question: str,
+    thinking: bool,
+    reasoning_effort: str,
+) -> Tuple[str, str]:
+    """同步执行 GLM-5V 流式视觉理解 (在独立线程中运行), 返回 (reasoning, content)。
+
+    与官方示例一致: stream=True 逐块收集 delta.reasoning_content (思考过程)
+    与 delta.content (正式回答), thinking 开启时附带 reasoning_effort 控制思考深度。
+    """
+    client = OpenAI(api_key=api_key, base_url=API_BASE)
+
+    user_content = [
+        {"type": "image_url", "image_url": url_obj} for url_obj in image_urls
+    ]
+    if question:
+        user_content.append({"type": "text", "text": question})
+
+    messages = [
+        {"role": "system", "content": "你是 GLM-5V 多模态视觉助手，请基于图片内容准确回答用户的问题。"},
+        {"role": "user", "content": user_content},
+    ]
+
+    extra_body = {}
+    if thinking:
+        extra_body["thinking"] = {"type": "enabled"}
+        extra_body["reasoning_effort"] = reasoning_effort
+
+    response = client.chat.completions.create(
+        model=MODEL,
+        messages=messages,
+        max_tokens=MAX_TOKENS,
+        stream=True,
+        extra_body=extra_body,
+    )
+
+    reasoning_parts: List[str] = []
+    content_parts: List[str] = []
+    for chunk in response:
+        if not chunk.choices:
+            continue
+        delta = chunk.choices[0].delta
+        reasoning = getattr(delta, "reasoning_content", None)
+        if reasoning:
+            reasoning_parts.append(reasoning)
+        content = getattr(delta, "content", None)
+        if content:
+            content_parts.append(content)
+
+    return "".join(reasoning_parts).strip(), "".join(content_parts).strip()
+
+
+async def describe_image_impl(
     images: Optional[List[str]] = None,
     question: str = "请描述图片中的元素与数据信息内容",
-    thinking: bool = False,
+    thinking: bool = True,
+    reasoning_effort: str = "high",
     extract_pasted: bool = False,
 ) -> dict:
-    """调用小米 MiMo-V2.5 API 对图片进行视觉理解与描述。"""
+    """调用 GLM-5V (腾讯云 TokenHub) 对图片进行流式视觉理解。
+
+    thinking=True (默认): 开启深度思考, 返回 reasoning (思考过程) 与 description (回答);
+    reasoning_effort 控制思考深度 (max/high/medium/low), 仅在 thinking=True 时生效。
+    """
     api_key = _load_api_key()
     if not api_key:
         return {
             "status": "error",
-            "message": "未配置 MIMO_API_KEY 环境变量，无法调起视觉识别接口。",
+            "message": "未配置 VISION_API_KEY 环境变量，无法调起视觉识别接口。",
         }
 
     target_images: List[str] = list(images) if images else []
@@ -151,36 +212,27 @@ async def mimo_describe_image_impl(
     try:
         image_urls = [_resolve_image_url(img) for img in target_images]
 
-        client = OpenAI(api_key=api_key, base_url=API_BASE)
-
-        user_content = [
-            {"type": "image_url", "image_url": url_obj} for url_obj in image_urls
-        ]
-        if question:
-            user_content.append({"type": "text", "text": question})
-
-        messages = [
-            {"role": "system", "content": "你是小米开发的 AI 助手 MiMo。"},
-            {"role": "user", "content": user_content},
-        ]
-
-        completion = client.chat.completions.create(
-            model=MODEL,
-            messages=messages,
-            max_completion_tokens=4096,
-            extra_body={
-                "thinking": {"type": "enabled" if thinking else "disabled"}
-            },
+        reasoning, content = await asyncio.to_thread(
+            _stream_vision_completion,
+            api_key,
+            image_urls,
+            question,
+            thinking,
+            reasoning_effort,
         )
 
-        result_text = completion.choices[0].message.content or ""
         return {
             "status": "success",
             "images_processed": target_images,
             "question": question,
-            "description": result_text.strip(),
+            "model": MODEL,
+            "provider": API_BASE,
+            "thinking": thinking,
+            "reasoning_effort": reasoning_effort if thinking else None,
+            "reasoning": reasoning,
+            "description": content,
         }
 
     except Exception as e:
-        logger.error(f"MiMo 视觉识别异常: {e}")
+        logger.error(f"GLM-5V 视觉识别异常: {e}")
         return {"status": "error", "message": f"视觉识别失败: {str(e)}"}

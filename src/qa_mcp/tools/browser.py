@@ -10,6 +10,7 @@ from playwright.async_api import async_playwright, Page, Browser, BrowserContext
 from qa_mcp.config import (
     CDP_URL,
     EVIDENCE_DIR,
+    DOWNLOAD_DIR,
     ELEMENT_WAIT_TIMEOUT_MS,
     OBSERVE_WAIT_MS,
     ACTION_RETRY_ATTEMPTS,
@@ -1355,3 +1356,278 @@ async def _check_wait_condition(
         if body_text and expected_text in body_text:
             return {"met": True, "detail": {"frame": f.url, "match": True}}
     return {"met": False, "detail": {"frames_checked": len(frames)}}
+
+
+# ==================== 文件下载 / 上传工具 ====================
+# 背景: 项目以 no_defaults=True 接管用户日常浏览器, Playwright 不下发
+# Browser.setDownloadBehavior (acceptDownloads='internal-browser-default'),
+# 因此 page.on("download") 事件流不开启、Playwright 下载 API 不可用。
+# 下载工具在动作窗口内自行通过浏览器级 CDP 会话开启事件流并把下载定向到
+# 指定目录, 完成后恢复浏览器默认下载行为 (不干扰用户日常下载)。
+# 上传工具直接走 Playwright 原生 API (set_input_files / filechooser 拦截)。
+
+DEFAULT_DOWNLOAD_WAIT_MS = 30000
+
+
+async def _resolve_download_dir(download_dir: Optional[str]) -> str:
+    """解析下载保存目录 (相对路径基于进程 cwd = MCP 服务启动目录), 自动创建。"""
+    base = download_dir or DOWNLOAD_DIR
+    path = os.path.abspath(base)
+    os.makedirs(path, exist_ok=True)
+    return path
+
+
+async def download_file_impl(
+    by: str = "css",
+    selector: Optional[str] = None,
+    role: Optional[str] = None,
+    name: Optional[str] = None,
+    iframe_selector: Optional[str] = None,
+    download_dir: Optional[str] = None,
+    filename: Optional[str] = None,
+    wait_timeout_ms: int = DEFAULT_DOWNLOAD_WAIT_MS,
+    description: Optional[str] = None,
+) -> dict:
+    """点击触发下载的按钮/链接, 将下载文件保存到指定目录并验证落盘。
+
+    定位参数与 click_interact 一致: by=css/xpath 传 selector (支持
+    iframe_selector 链式穿透), by=role 传 role+name。
+    download_dir 默认 ./downloads (相对 MCP 服务启动目录, 可用环境变量
+    DOWNLOAD_DIR 覆盖); filename 可指定保存名 (默认浏览器提供的文件名,
+    已存在同名文件时覆盖); wait_timeout_ms 为下载完成等待上限 (默认 30s)。
+
+    返回 status: success (文件已落盘并验证) / timeout (超时未完成) /
+    no_download (点击未触发下载) / canceled (下载被取消), 附落盘文件
+    路径/大小与下载来源信息, 便于后续读取分析 (如 xlsx 用 pandas 编辑保存)。
+    """
+    by_lower = (by or "").lower()
+    if by_lower not in ("css", "xpath", "role"):
+        raise RuntimeError(f"by 仅支持 css / xpath / role (下载按钮为 DOM 元素), 收到: {by}")
+    if by_lower in ("css", "xpath") and not selector:
+        raise RuntimeError(f"by={by_lower} 时必须提供 selector")
+    if by_lower == "role" and not role:
+        raise RuntimeError("by=role 时必须提供 role")
+    timeout = max(1000, min(int(wait_timeout_ms), 120000))
+
+    page = await browser_mgr.get_page()
+    save_dir = await _resolve_download_dir(download_dir)
+    started = time.monotonic()
+
+    cdp = await page.context.browser.new_browser_cdp_session()
+    begin_info: Dict[str, Dict[str, Any]] = {}
+    state_map: Dict[str, str] = {}
+
+    def _on_will_begin(payload: Dict[str, Any]) -> None:
+        guid = str(payload.get("guid", ""))
+        begin_info[guid] = {
+            "guid": guid,
+            "suggested_filename": payload.get("suggestedFilename"),
+            "url": payload.get("url"),
+        }
+
+    def _on_progress(payload: Dict[str, Any]) -> None:
+        guid = str(payload.get("guid", ""))
+        state = payload.get("state")
+        if guid:
+            state_map[guid] = state
+
+    cdp.on("Browser.downloadWillBegin", _on_will_begin)
+    cdp.on("Browser.downloadProgress", _on_progress)
+    try:
+        await cdp.send("Browser.setDownloadBehavior", {
+            "behavior": "allow",
+            "downloadPath": save_dir,
+            "eventsEnabled": True,
+        })
+        pre_files = set(os.listdir(save_dir))
+        click_result = await _do_click(
+            page, by_lower, selector, iframe_selector,
+            role=role, name=name,
+            description=description or "触发下载",
+        )
+        while True:
+            finished = begin_info and all(
+                state_map.get(g) in ("completed", "canceled") for g in begin_info
+            )
+            if finished or time.monotonic() - started >= timeout / 1000:
+                break
+            await asyncio.sleep(0.1)
+    finally:
+        # 恢复浏览器默认下载行为 (不干扰用户日常下载); 失败仅告警。
+        try:
+            await cdp.send("Browser.setDownloadBehavior", {
+                "behavior": "default",
+                "eventsEnabled": False,
+            })
+        except Exception as e:
+            logger.warning(f"恢复浏览器默认下载行为失败: {e}")
+        try:
+            await cdp.detach()
+        except Exception:
+            pass
+
+    elapsed_ms = int((time.monotonic() - started) * 1000)
+
+    if not begin_info:
+        return {
+            "status": "no_download",
+            "note": "点击未触发下载 (页面无 download 事件); 请核对按钮定位或确认下载由其他交互触发",
+            "elapsed_ms": elapsed_ms,
+            "download_dir": save_dir,
+            "files": [],
+            "click": {k: click_result.get(k) for k in ("status", "by", "selector", "element_center")},
+        }
+
+    new_files = sorted(set(os.listdir(save_dir)) - pre_files)
+    if filename and new_files:
+        # 指定保存名: Chrome 对重名会自动加 "(1)" 后缀, 统一改回用户指定名 (覆盖旧文件)
+        src = os.path.join(save_dir, new_files[0])
+        dst = os.path.join(save_dir, filename)
+        if src != dst:
+            try:
+                os.replace(src, dst)
+                new_files[0] = filename
+            except OSError as e:
+                logger.warning(f"重命名下载文件失败 ({src} -> {dst}): {e}")
+
+    files_info = []
+    for f in new_files:
+        fp = os.path.join(save_dir, f)
+        try:
+            size = os.path.getsize(fp)
+        except OSError:
+            size = None
+        files_info.append({"filename": f, "path": fp, "size_bytes": size})
+
+    pending = [g for g in begin_info if state_map.get(g) not in ("completed", "canceled")]
+    canceled = [g for g in begin_info if state_map.get(g) == "canceled"]
+    if pending:
+        status = "timeout"
+        note = f"下载未在 {timeout}ms 内完成 (pending: {len(pending)} 个)"
+    elif canceled and not any(state_map.get(g) == "completed" for g in begin_info):
+        status = "canceled"
+        note = "下载被浏览器取消"
+    else:
+        status = "success"
+        note = "下载完成; 文件已落盘, 可进一步读取分析 (如 xlsx 用 pandas 编辑)"
+
+    return {
+        "status": status,
+        "download_dir": save_dir,
+        "files": files_info,
+        "downloads": [
+            {**begin_info[g], "state": state_map.get(g)}
+            for g in begin_info
+        ],
+        "click": {k: click_result.get(k) for k in ("status", "by", "selector", "element_center")},
+        "elapsed_ms": elapsed_ms,
+        "note": note,
+    }
+
+
+def _resolve_upload_paths(file_paths: List[str]) -> List[str]:
+    """上传文件路径解析: 相对路径基于进程 cwd, 文件必须存在。"""
+    if not file_paths:
+        raise RuntimeError("file_paths 不能为空")
+    resolved: List[str] = []
+    missing: List[str] = []
+    for p in file_paths:
+        ap = os.path.abspath(p)
+        if not os.path.isfile(ap):
+            missing.append(p)
+        else:
+            resolved.append(ap)
+    if missing:
+        raise RuntimeError(f"待上传文件不存在: {missing}")
+    return resolved
+
+
+async def upload_file_impl(
+    file_paths: List[str],
+    by: str = "css",
+    selector: Optional[str] = None,
+    role: Optional[str] = None,
+    name: Optional[str] = None,
+    iframe_selector: Optional[str] = None,
+    success_text: Optional[str] = None,
+    wait_timeout_ms: int = 15000,
+    description: Optional[str] = None,
+) -> dict:
+    """点击上传按钮/输入框并注入要上传的文件, 可选等待上传成功的页面反馈。
+
+    两条路径:
+      1. 定位到 <input type=file> → set_input_files 直接设置 (含隐藏/antd 包装);
+      2. 定位到普通按钮 → 点击后拦截系统文件选择框 (filechooser), 不弹原生
+         对话框, 直接注入文件路径 (页面逻辑照常触发上传)。
+
+    file_paths: 一个或多个文件 (相对路径基于 MCP 服务启动目录=项目根), 必须存在。
+    success_text: 可选, 上传成功后页面出现的文本 (如"上传成功"); 指定后工具
+      轮询等待其出现, 返回 success_text_found 供判断上传是否成功。
+    wait_timeout_ms: success_text 等待上限 (默认 15s)。
+
+    返回: status / mode (set_input_files | filechooser) / file_paths /
+    success_text_found / 轮询详情, 便于 Agent 断言上传结果。
+    """
+    by_lower = (by or "").lower()
+    if by_lower not in ("css", "xpath", "role"):
+        raise RuntimeError(f"by 仅支持 css / xpath / role, 收到: {by}")
+    if by_lower in ("css", "xpath") and not selector:
+        raise RuntimeError(f"by={by_lower} 时必须提供 selector")
+    if by_lower == "role" and not role:
+        raise RuntimeError("by=role 时必须提供 role")
+    paths = _resolve_upload_paths(file_paths)
+
+    page = await browser_mgr.get_page()
+    started = time.monotonic()
+    frame_path_list: List[str] = []
+    action_label = description or f"上传: {os.path.basename(paths[0])}"
+
+    async def _set_files_once():
+        nonlocal frame_path_list
+        target, frame_path_list = await _resolve_frame_target(page, iframe_selector)
+        if by_lower == "role":
+            lc = target.get_by_role(role, name=name or None)
+        else:
+            full_selector = f"xpath={selector}" if by_lower == "xpath" else selector
+            lc = target.locator(full_selector)
+        await lc.wait_for(state="visible", timeout=ELEMENT_WAIT_TIMEOUT_MS)
+        await lc.scroll_into_view_if_needed()
+        is_file_input = await lc.evaluate(
+            "el => el.tagName === 'INPUT' && el.type === 'file'"
+        )
+        if is_file_input:
+            await lc.set_input_files(paths)
+            return {"mode": "set_input_files", "is_multiple": None}
+        async with page.expect_file_chooser(timeout=ELEMENT_WAIT_TIMEOUT_MS) as fc_info:
+            await lc.click()
+        chooser = await fc_info.value
+        multiple = chooser.is_multiple()
+        await chooser.set_files(paths)
+        return {"mode": "filechooser", "is_multiple": multiple}
+
+    try:
+        set_result = await retry_ui_action(action_label, _set_files_once)
+    except Exception as e:
+        raise RuntimeError(f"上传文件失败: {e}") from e
+
+    result: Dict[str, Any] = {
+        "status": "success",
+        **set_result,
+        "file_paths": paths,
+        "frame_path": frame_path_list,
+        "elapsed_ms": int((time.monotonic() - started) * 1000),
+    }
+    if success_text:
+        check = await wait_for_condition_impl(
+            condition="text_present",
+            expected_text=success_text,
+            timeout_ms=wait_timeout_ms,
+        )
+        result["success_text"] = success_text
+        result["success_text_found"] = check.get("status") == "success"
+        result["success_check"] = {
+            "status": check.get("status"),
+            "state": check.get("state"),
+            "elapsed_ms": check.get("elapsed_ms"),
+        }
+    return result
