@@ -4,7 +4,44 @@ from dotenv import load_dotenv
 
 # 启动时加载项目根目录 .env (若存在)。已存在的进程环境变量优先于 .env,
 # 因此 .mcp.json / 系统环境中的显式配置不会被覆盖。
+def _env_project_dir() -> str:
+    """读取客户端注入的用户项目根 (CLAUDE_PROJECT_DIR, 可能带引号)。"""
+    return os.getenv("CLAUDE_PROJECT_DIR", "").strip().strip('"').strip("'")
+
+
+# 启动时加载 .env: 优先用户项目 .env (CLAUDE_PROJECT_DIR, 插件化部署时
+# 用户的配置应覆盖插件自带默认), 其次进程 cwd 的 .env (插件目录/本地项目);
+# 已存在的进程环境变量始终优先, 不会被 .env 覆盖。
+_proj_env = _env_project_dir()
+if _proj_env:
+    load_dotenv(os.path.join(_proj_env, ".env"))
 load_dotenv()
+
+
+def _resolve_project_dir() -> str:
+    """定位用户项目根目录。
+
+    插件化部署时 MCP 服务进程由 `uv run --directory ${CLAUDE_PLUGIN_ROOT}`
+    拉起, 进程 cwd 是插件安装目录而非用户项目; Claude Code 会向子进程注入
+    CLAUDE_PROJECT_DIR 环境变量, 用它还原用户项目根, 使相对路径 (粘贴图片/
+    截图/下载/导出目录) 始终落在用户自己的项目里。未注入时回退进程 cwd
+    (本地直跑 / 无项目概念的客户端)。
+    """
+    proj = _env_project_dir()
+    if proj and os.path.isdir(proj):
+        return os.path.abspath(proj)
+    return os.getcwd()
+
+
+PROJECT_DIR = _resolve_project_dir()
+
+
+def project_path(path: str) -> str:
+    """将相对路径锚定到用户项目根目录 (绝对路径/空串原样返回)。"""
+    if not path or os.path.isabs(path):
+        return path
+    return os.path.join(PROJECT_DIR, os.path.expanduser(path))
+
 
 CDP_URL = os.getenv("CDP_URL", "http://127.0.0.1:9222")
 # 鼠标光标可视化 + 目标高亮 服务级默认开关 (visualize=None 时生效, 默认关闭)
@@ -14,10 +51,12 @@ VISUAL_EFFECTS = os.getenv("VISUAL_EFFECTS", "0").strip().lower() in (
     "yes",
     "on",
 )
-EVIDENCE_DIR = "evidence_assets"
-OUTPUT_DIR = "output_testcases"
-# download_file 工具默认下载保存目录 (相对 MCP 服务启动目录=项目根)
-DOWNLOAD_DIR = os.getenv("DOWNLOAD_DIR", "downloads")
+# 以下相对目录统一锚定用户项目根: 插件化部署时进程 cwd 是插件目录,
+# 若保持相对路径会把证据/导出/下载写进插件安装目录, 用户侧无法访问。
+EVIDENCE_DIR = project_path("evidence_assets")
+OUTPUT_DIR = project_path("output_testcases")
+# download_file 工具默认下载保存目录 (相对用户项目根, 可环境变量覆盖)
+DOWNLOAD_DIR = project_path(os.getenv("DOWNLOAD_DIR", "downloads"))
 
 
 # ==================== 时序/等待参数 (统一调优成功率) ====================

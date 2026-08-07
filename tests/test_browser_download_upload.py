@@ -128,6 +128,18 @@ class DownloadDirTests(unittest.TestCase):
             path = asyncio.run(_resolve_download_dir(tmp))
             self.assertEqual(os.path.abspath(tmp), path)
 
+    def test_relative_dir_anchored_to_project(self):
+        """插件部署: 相对下载目录基于用户项目根 (PROJECT_DIR), 而非进程 cwd。"""
+        with tempfile.TemporaryDirectory() as proj, tempfile.TemporaryDirectory() as cwd:
+            old = os.getcwd()
+            os.chdir(cwd)
+            try:
+                with mock.patch.object(browser_tools, "PROJECT_DIR", proj):
+                    path = asyncio.run(_resolve_download_dir("dl"))
+                self.assertEqual(os.path.abspath(path), os.path.join(proj, "dl"))
+            finally:
+                os.chdir(old)
+
 
 class DownloadFileTests(unittest.IsolatedAsyncioTestCase):
     async def _run(self, download_dir, side_effect=None, wait_timeout_ms=30000, **kwargs):
@@ -291,6 +303,20 @@ class ResolveUploadPathsTests(unittest.TestCase):
                     f.write("x")
                 resolved = _resolve_upload_paths(["a.txt"])
                 self.assertEqual(resolved, [os.path.join(tmp, "a.txt")])
+            finally:
+                os.chdir(old)
+
+    def test_relative_resolved_in_project_dir_first(self):
+        """插件部署: 上传相对路径优先基于用户项目根 (PROJECT_DIR) 解析。"""
+        with tempfile.TemporaryDirectory() as proj, tempfile.TemporaryDirectory() as cwd:
+            with open(os.path.join(proj, "a.txt"), "w") as f:
+                f.write("x")
+            old = os.getcwd()
+            os.chdir(cwd)
+            try:
+                with mock.patch.object(browser_tools, "PROJECT_DIR", proj):
+                    resolved = _resolve_upload_paths(["a.txt"])
+                self.assertEqual(resolved, [os.path.join(proj, "a.txt")])
             finally:
                 os.chdir(old)
 

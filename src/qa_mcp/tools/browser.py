@@ -11,6 +11,7 @@ from qa_mcp.config import (
     CDP_URL,
     EVIDENCE_DIR,
     DOWNLOAD_DIR,
+    PROJECT_DIR,
     ELEMENT_WAIT_TIMEOUT_MS,
     OBSERVE_WAIT_MS,
     ACTION_RETRY_ATTEMPTS,
@@ -1370,9 +1371,11 @@ DEFAULT_DOWNLOAD_WAIT_MS = 30000
 
 
 async def _resolve_download_dir(download_dir: Optional[str]) -> str:
-    """解析下载保存目录 (相对路径基于进程 cwd = MCP 服务启动目录), 自动创建。"""
+    """解析下载保存目录: 相对路径基于用户项目根目录 (PROJECT_DIR) 而非进程 cwd。"""
     base = download_dir or DOWNLOAD_DIR
-    path = os.path.abspath(base)
+    path = os.path.abspath(base) if os.path.isabs(base) else os.path.abspath(
+        os.path.join(PROJECT_DIR, base)
+    )
     os.makedirs(path, exist_ok=True)
     return path
 
@@ -1392,7 +1395,7 @@ async def download_file_impl(
 
     定位参数与 click_interact 一致: by=css/xpath 传 selector (支持
     iframe_selector 链式穿透), by=role 传 role+name。
-    download_dir 默认 ./downloads (相对 MCP 服务启动目录, 可用环境变量
+    download_dir 默认 ./downloads (相对用户项目根目录, 可用环境变量
     DOWNLOAD_DIR 覆盖); filename 可指定保存名 (默认浏览器提供的文件名,
     已存在同名文件时覆盖); wait_timeout_ms 为下载完成等待上限 (默认 30s)。
 
@@ -1526,17 +1529,24 @@ async def download_file_impl(
 
 
 def _resolve_upload_paths(file_paths: List[str]) -> List[str]:
-    """上传文件路径解析: 相对路径基于进程 cwd, 文件必须存在。"""
+    """上传文件路径解析: 相对路径优先基于用户项目根 (PROJECT_DIR), 其次进程 cwd。"""
     if not file_paths:
         raise RuntimeError("file_paths 不能为空")
     resolved: List[str] = []
     missing: List[str] = []
     for p in file_paths:
-        ap = os.path.abspath(p)
-        if not os.path.isfile(ap):
+        if os.path.isabs(p):
+            candidates = [os.path.abspath(p)]
+        else:
+            candidates = [
+                os.path.abspath(os.path.join(PROJECT_DIR, p)),
+                os.path.abspath(p),
+            ]
+        found = next((c for c in candidates if os.path.isfile(c)), None)
+        if found is None:
             missing.append(p)
         else:
-            resolved.append(ap)
+            resolved.append(found)
     if missing:
         raise RuntimeError(f"待上传文件不存在: {missing}")
     return resolved
@@ -1560,7 +1570,7 @@ async def upload_file_impl(
       2. 定位到普通按钮 → 点击后拦截系统文件选择框 (filechooser), 不弹原生
          对话框, 直接注入文件路径 (页面逻辑照常触发上传)。
 
-    file_paths: 一个或多个文件 (相对路径基于 MCP 服务启动目录=项目根), 必须存在。
+    file_paths: 一个或多个文件 (相对路径基于用户项目根目录, 必须存在)。
     success_text: 可选, 上传成功后页面出现的文本 (如"上传成功"); 指定后工具
       轮询等待其出现, 返回 success_text_found 供判断上传是否成功。
     wait_timeout_ms: success_text 等待上限 (默认 15s)。

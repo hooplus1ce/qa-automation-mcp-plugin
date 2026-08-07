@@ -142,3 +142,6 @@ credentials/
 # Local debug Chrome profile (if created under project)
 ChromeDebugProfile/
 chrome-debug-profile/
+
+# 本地调试脚本 (含硬编码 API Key, 不提交)
+test.py

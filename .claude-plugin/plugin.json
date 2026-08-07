@@ -1,29 +1,33 @@
 {
-  "name": "qa-automation",
-  "description": "SCM/MOM/WMS/ERP 企业级 Web 自动化测试 MCP 服务: Playwright CDP 接管本地 Chrome, 提供页面分析/点击输入/动作链/VTable 场景图交互/用例录制与 Shadcn Excel 导出",
-  "version": "0.2.0",
-  "author": {
-    "name": "Hoolinks"
-  },
-  "skills": [
-    "./skills/qa-automation-guide"
-  ],
-  "mcpServers": {
-    "qa-automation-mcp": {
-      "command": "uv",
-      "args": [
-        "run",
-        "--directory",
-        "${CLAUDE_PLUGIN_ROOT}",
-        "fastmcp",
-        "run",
-        "--skip-env",
-        "fastmcp.json"
-      ],
-      "env": {
-        "CDP_URL": "http://127.0.0.1:9222",
-        "PYTHONUNBUFFERED": "1"
-      }
+    "name": "qa-automation",
+    "description": "SCM/MOM/WMS/ERP 企业级 Web 自动化测试 MCP 服务: Playwright CDP 接管本地 Chrome, 提供页面分析/点击输入/动作链/VTable 场景图交互/用例录制与 Shadcn Excel 导出",
+    "version": "0.2.0",
+    "author": {
+        "name": "Hoolinks"
+    },
+    "skills": [
+        "./skills/qa-automation-guide"
+    ],
+    "mcpServers": {
+        "qa-automation-mcp": {
+            "command": "uv",
+            "args": [
+                "run",
+                "--directory",
+                "${CLAUDE_PLUGIN_ROOT}",
+                "fastmcp",
+                "run",
+                "--skip-env",
+                "fastmcp.json"
+            ],
+            "env": {
+                "CDP_URL": "http://127.0.0.1:9222",
+                "PYTHONUNBUFFERED": "1"
+            }
+        },
+        "tencent-docs": {
+            "type": "http",
+            "url": "https://docs.qq.com/openapi/mcp"
+        }
     }
-  }
 }

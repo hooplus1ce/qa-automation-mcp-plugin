@@ -11,7 +11,7 @@ from typing import List, Optional, Tuple
 
 from openai import OpenAI
 
-from qa_mcp.config import EVIDENCE_DIR
+from qa_mcp.config import EVIDENCE_DIR, PROJECT_DIR
 
 logger = logging.getLogger("mcp_automation.vision")
 
@@ -36,11 +36,15 @@ MIME_EXT = {
 
 
 def _load_api_key() -> str:
-    """读取 VISION_API_KEY: 环境变量 > 项目 .env。"""
+    """读取 VISION_API_KEY: 环境变量 > 用户项目 .env > 插件 .env。"""
     key = os.environ.get("VISION_API_KEY", "").strip()
     if key:
         return key
-    for base in (Path.cwd(), Path(__file__).resolve().parents[3]):
+    bases: List[Path] = []
+    for base in (Path(PROJECT_DIR), Path.cwd(), Path(__file__).resolve().parents[3]):
+        if base not in bases:
+            bases.append(base)
+    for base in bases:
         env_file = base / ".env"
         if env_file.is_file():
             for line in env_file.read_text(encoding="utf-8").splitlines():
@@ -51,11 +55,24 @@ def _load_api_key() -> str:
 
 
 def _resolve_image_url(image_arg: str) -> dict:
-    """将图片文件路径或 URL 解析为 Base64 data URI 对象。"""
+    """将图片文件路径或 URL 解析为 Base64 data URI 对象。
+
+    相对路径优先基于用户项目根目录 (PROJECT_DIR, 插件化部署时由客户端注入的
+    CLAUDE_PROJECT_DIR 指向用户项目) 解析, 其次回退进程 cwd (本地直跑),
+    保证粘贴图片/截图等相对地址在任何部署形态下都能命中。
+    """
     if image_arg.startswith(("http://", "https://")):
         return {"url": image_arg}
 
-    path = Path(image_arg)
+    expanded = os.path.expanduser(image_arg)
+    path = Path(expanded)
+    if not path.is_file():
+        for base in (Path(PROJECT_DIR), Path.cwd()):
+            candidate = base / expanded
+            if candidate.is_file():
+                path = candidate
+                break
+
     if not path.is_file():
         raise RuntimeError(f"图片文件不存在: {image_arg}")
 
@@ -71,8 +88,12 @@ def _resolve_image_url(image_arg: str) -> dict:
 
 
 def _extract_latest_pasted_image() -> Optional[Path]:
-    """从 Claude Code 会话记录 jsonl 中提取最近一张粘贴的图片并保存到 EVIDENCE_DIR。"""
-    project_parts = Path.cwd().resolve().parts
+    """从 Claude Code 会话记录 jsonl 中提取最近一张粘贴的图片并保存到 EVIDENCE_DIR。
+
+    会话目录名由用户项目路径 (PROJECT_DIR) 生成; 插件化部署时进程 cwd 是插件
+    目录, 不能用作会话定位依据。
+    """
+    project_parts = Path(PROJECT_DIR).resolve().parts
     drive = project_parts[0][0]
     rest_path = "-".join(project_parts[1:])
 

@@ -1,6 +1,7 @@
 """vision.py 单元测试: API Key 加载 / 图片解析 / GLM-5V 流式思考解析 (describe_image)。"""
 
 import base64
+import json
 import os
 import sys
 import tempfile
@@ -65,13 +66,30 @@ class TestLoadApiKey(unittest.TestCase):
             env_file.write_text('VISION_API_KEY=from-dotenv\n', encoding="utf-8")
             with patch.dict(os.environ, {}, clear=True), patch(
                 "qa_mcp.tools.vision.Path.cwd", return_value=Path(tmp)
-            ), patch.object(vision, "__file__", str(Path(tmp) / "vision.py")):
+            ), patch.object(vision, "PROJECT_DIR", tmp), patch.object(
+                vision, "__file__", str(Path(tmp) / "vision.py")
+            ):
                 self.assertEqual(vision._load_api_key(), "from-dotenv")
+
+    def test_dotenv_in_project_dir_wins_over_plugin_dir(self):
+        """插件部署: VISION_API_KEY 配置在用户项目 .env, 进程 cwd 是插件目录。"""
+        with tempfile.TemporaryDirectory() as proj, tempfile.TemporaryDirectory() as plug:
+            (Path(proj) / ".env").write_text(
+                'VISION_API_KEY=from-project\n', encoding="utf-8"
+            )
+            with patch.dict(os.environ, {}, clear=True), patch(
+                "qa_mcp.tools.vision.Path.cwd", return_value=Path(plug)
+            ), patch.object(vision, "PROJECT_DIR", proj), patch.object(
+                vision, "__file__", str(Path(plug) / "vision.py")
+            ):
+                self.assertEqual(vision._load_api_key(), "from-project")
 
     def test_missing_returns_empty(self):
         with patch.dict(os.environ, {}, clear=True), patch(
             "qa_mcp.tools.vision.Path.cwd", return_value=Path(tempfile.gettempdir())
-        ), patch.object(vision, "__file__", str(Path(tempfile.gettempdir()) / "vision.py")):
+        ), patch.object(vision, "PROJECT_DIR", tempfile.gettempdir()), patch.object(
+            vision, "__file__", str(Path(tempfile.gettempdir()) / "vision.py")
+        ):
             self.assertEqual(vision._load_api_key(), "")
 
 
@@ -92,6 +110,26 @@ class TestResolveImageUrl(unittest.TestCase):
                 base64.b64decode(obj["url"].split(",", 1)[1]), TINY_PNG
             )
 
+    def test_relative_path_resolves_in_project_dir(self):
+        """插件部署: 相对图片路径相对用户项目根 (PROJECT_DIR), 与进程 cwd 无关。"""
+        with tempfile.TemporaryDirectory() as proj, tempfile.TemporaryDirectory() as plug:
+            (Path(proj) / "shot.png").write_bytes(TINY_PNG)
+            with patch.object(vision, "PROJECT_DIR", proj), patch(
+                "qa_mcp.tools.vision.Path.cwd", return_value=Path(plug)
+            ):
+                obj = vision._resolve_image_url("shot.png")
+                self.assertTrue(obj["url"].startswith("data:image/png;base64,"))
+
+    def test_relative_path_falls_back_to_cwd(self):
+        """本地直跑: 项目根没有该文件时回退进程 cwd。"""
+        with tempfile.TemporaryDirectory() as proj, tempfile.TemporaryDirectory() as plug:
+            (Path(plug) / "shot.png").write_bytes(TINY_PNG)
+            with patch.object(vision, "PROJECT_DIR", proj), patch(
+                "qa_mcp.tools.vision.Path.cwd", return_value=Path(plug)
+            ):
+                obj = vision._resolve_image_url("shot.png")
+                self.assertTrue(obj["url"].startswith("data:image/png;base64,"))
+
     def test_missing_file_raises(self):
         with self.assertRaisesRegex(RuntimeError, "图片文件不存在"):
             vision._resolve_image_url("D:/no/such/file.png")
@@ -102,6 +140,62 @@ class TestResolveImageUrl(unittest.TestCase):
             p.write_bytes(b"\x89PNG" + b"0" * (vision.MAX_IMAGE_BYTES + 1))
             with self.assertRaisesRegex(RuntimeError, "50MB"):
                 vision._resolve_image_url(str(p))
+
+
+class TestExtractLatestPastedImage(unittest.TestCase):
+    def test_session_located_by_project_dir_not_cwd(self):
+        """插件部署: 会话 jsonl 目录按用户项目路径 (PROJECT_DIR) 定位, 而非进程 cwd。"""
+        with tempfile.TemporaryDirectory() as home_tmp, tempfile.TemporaryDirectory() as proj, tempfile.TemporaryDirectory() as plug, tempfile.TemporaryDirectory() as evid:
+            home = Path(home_tmp)
+            project = Path(proj) / "my_app"
+            project.mkdir()
+            parts = project.resolve().parts
+            drive = parts[0][0]
+            rest = "-".join(parts[1:])
+            session_dir = home / ".claude" / "projects" / f"{drive.lower()}--{rest}"
+            session_dir.mkdir(parents=True)
+            rec = {
+                "type": "user",
+                "message": {
+                    "content": [
+                        {
+                            "type": "image",
+                            "source": {
+                                "type": "base64",
+                                "media_type": "image/png",
+                                "data": base64.b64encode(TINY_PNG).decode("ascii"),
+                            },
+                        }
+                    ]
+                },
+            }
+            # 与 Claude Code 会话 jsonl 一致的紧凑分隔符 (行内需含 '"type":"image"')
+            (session_dir / "20260807.jsonl").write_text(
+                json.dumps(rec, separators=(",", ":")) + "\n", encoding="utf-8"
+            )
+            with patch.object(vision, "PROJECT_DIR", str(project)), patch(
+                "qa_mcp.tools.vision.Path.home", return_value=home
+            ), patch("qa_mcp.tools.vision.Path.cwd", return_value=Path(plug)), patch.object(
+                vision, "EVIDENCE_DIR", evid
+            ):
+                out = vision._extract_latest_pasted_image()
+            self.assertIsNotNone(out)
+            self.assertEqual(out.read_bytes(), TINY_PNG)
+            self.assertTrue(out.name.startswith("pasted_image_latest"))
+
+    def test_no_session_for_cwd_returns_none(self):
+        """插件部署且无注入项目: 按进程 cwd 找不到会话时返回 None 而非报错。"""
+        with tempfile.TemporaryDirectory() as home_tmp, tempfile.TemporaryDirectory() as plug:
+            home = Path(home_tmp)
+            parts = Path(plug).resolve().parts
+            drive = parts[0][0]
+            rest = "-".join(parts[1:])
+            session_dir = home / ".claude" / "projects" / f"{drive.lower()}--{rest}"
+            session_dir.mkdir(parents=True)  # cwd 会话目录存在但无 jsonl
+            with patch.object(vision, "PROJECT_DIR", plug), patch(
+                "qa_mcp.tools.vision.Path.home", return_value=home
+            ):
+                self.assertIsNone(vision._extract_latest_pasted_image())
 
 
 class TestDescribeImage(unittest.IsolatedAsyncioTestCase):
