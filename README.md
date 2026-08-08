@@ -33,6 +33,7 @@
 - **零体积发布**：分发 Zip 插件包时**绝对不需要**包含庞大的 `.venv` 虚拟环境，打出的插件 Zip 包体积仅 **~200 KB**。
 - **外层 `uv run` 负责环境感知与现场构建**：当 MCP 客户端启动插件时，命令最外层的 `uv run` 会首先检查插件目录下是否存在 `.venv`。若不存在，`uv` 会读取 `fastmcp.json` / `pyproject.toml` 依赖声明，在目标机器上自动下载 Python 环境并瞬间构建虚拟环境、安装依赖。
 - **内层 `--skip-env` 防止二次建环死循环**：子命令 `fastmcp run --skip-env fastmcp.json` 中的 `--skip-env` 标志用于告知 FastMCP 内部 CLI 引擎：*“外层 `uv` 已经完成了虚拟环境的创建与激活，FastMCP 无需在内部重复拉起 `uv` 嵌套构建”*。此举杜绝了死循环，并将服务启动耗时缩短至毫秒级。
+- **`uv.lock` 随包分发锁定依赖**：依赖解析结果（含全部传递依赖）提交在 `uv.lock` 中并随 Zip 包分发，用户机器首次 `uv run` 严格按锁定版本建环。杜绝 `pyproject.toml` 范围依赖（如 `playwright>=1.60`）在用户侧解析到新版本导致的“开发环境正常、用户环境异常”。（修改 `pyproject.toml` 依赖后需重新生成：`uv lock` 或直接 `uv add`。）
 
 ### 2. 插件全局挂载与 `${CLAUDE_PLUGIN_ROOT}` 路径寻址
 - **解决 `not loaded` 的关键**：在 Claude Code / Claude Desktop 插件体系中，用户安装插件后，插件文件解压挂载在插件系统的全局路径下（如 `~/.claude/plugins/qa-automation-plugin/`）。当用户在任意其他工作区目录使用该插件时，如果没有指定 `--directory "${CLAUDE_PLUGIN_ROOT}"`，`uv` 会在用户当前工作区寻找 `fastmcp.json`，从而导致找不到配置文件并引发 **`qa-automation-mcp: not loaded`** 加载失败。
@@ -66,7 +67,7 @@ qa-automation-plugin/
 │   ├── providers/            # FastMCP Provider 扩展 (BrowserProvider, VTableProvider)
 │   ├── tools/                # 25 个 MCP 核心工具实现 (browser, vtable, recorder, vision 等)
 │   └── utils/                # UI 组件适配器、场景图 JS 注入脚本与 Shadcn Excel 渲染器
-└── tests/                    # 单元测试套件 (112 个自动化测试用例)
+└── tests/                    # 单元测试套件 (127 个自动化测试用例)
 ```
 
 ---
@@ -97,6 +98,9 @@ qa-automation-plugin/
    - `CDP_URL`: Chrome CDP 调试地址（默认 `http://127.0.0.1:9222`）。
    - `VISUAL_EFFECTS`: 是否开启鼠标点击与定位框可视化高亮（默认 `true`）。
    - `VISION_API_KEY`: 腾讯云 TokenHub GLM-5V 视觉 API Key（仅当主模型为纯文本模型需要图像理解降级时配置）。
+   - `ELEMENT_WAIT_TIMEOUT_MS`: 元素定位等待超时（click/fill/select/press 的 wait_for visible，默认 `10000`ms）。
+   - `ACTION_STEP_TIMEOUT_MS`: 动作链单步执行上限（默认 `90000`ms；单步超时记为失败，防止链中一个死动作堵死整条链）。
+   - `TOOL_MAX_EXECUTION_MS`: 全局工具执行看门狗（默认 `300000`ms；Chrome 假死/CDP 连接半开时协议调用可能无限等待，超时后强制中断、释放串行队列并重置浏览器连接）。
 
 ---
 
@@ -209,6 +213,6 @@ claude plugin validate .claude-plugin/plugin.json
 # 2. 检查 FastMCP 服务工具装配与状态
 uv run fastmcp list src/qa_mcp/server.py
 
-# 3. 运行自动化单元测试套件 (包含 112 个测试用例)
+# 3. 运行自动化单元测试套件 (包含 127 个测试用例)
 uv run pytest
 ```
