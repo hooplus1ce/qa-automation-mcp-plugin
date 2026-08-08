@@ -132,6 +132,24 @@ class TestPluginSetup(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(form.download_dir, "qa-downloads")
         self.assertFalse(form.visual_effects)
 
+    def test_handle_config_form_writes_env(self):
+        """Desktop FormInput 回调: 校验后写入用户级 .env, 返回重启提示。"""
+        with tempfile.TemporaryDirectory() as proj, tempfile.TemporaryDirectory() as tmp:
+            form = _make_form(project_dir=str(Path(proj)))
+            target = Path(tmp) / ".env"
+            with patch.object(setup, "user_env_path", return_value=target):
+                message = setup.handle_config_form(form)
+            content = target.read_text(encoding="utf-8")
+        self.assertIn("重启客户端", message)
+        self.assertIn("PROJECT_DIR=", content)
+        self.assertIn("VISION_PROVIDER=antigravity", content)
+
+    def test_handle_config_form_rejects_bad_project(self):
+        form = _make_form(project_dir="D:/no/such/project")
+        with patch.object(setup, "user_env_path", return_value=Path("x") / ".env"):
+            with self.assertRaisesRegex(ValueError, "不存在"):
+                setup.handle_config_form(form)
+
 
 if __name__ == "__main__":
     unittest.main()

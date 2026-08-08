@@ -275,6 +275,12 @@
   （项目根目录/CDP 地址/视觉通道/视觉模型/下载目录/鼠标高亮，预填当前生效值），
   校验后写入用户级 `~/.qa-automation-plugin/.env`，**重启客户端生效**。用户要求
   配置或工具报配置缺失时由主模型调用；取消/客户端不支持时零修改。
+  **Claude Desktop 另有 Apps 表单**（`setup_form`，FastMCP FormInput）：同一
+  Pydantic 模型渲染为原生表单 UI，提交回调写入同一 .env——Claude Code (TUI)
+  自动降级走 elicitation 表单，Desktop 走原生 UI。
+- `choose`: **Desktop 选择卡片**（FastMCP Apps Choice provider）——可点击选项
+  按钮替代文本回复，选择结果作为消息回对话。Claude Code (TUI) 不渲染 Apps UI，
+  降级用 `describe_image(interactive=True)` 的 elicitation 单选。
 - `start_recording`: 初始化测试用例录制会话。
 - `execute_and_record`: 执行动作并自动记录最优高韧性语义定位步骤。
 

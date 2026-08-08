@@ -123,22 +123,10 @@ async def plugin_setup_impl(ctx: Context = None) -> dict:
     if hasattr(data, "model_dump"):
         data = data.model_dump()
 
-    project_dir = str(data.get("project_dir", "")).strip().strip('"')
-    if not project_dir or not Path(project_dir).is_dir():
-        return {
-            "status": "error",
-            "message": f"项目根目录不存在或不可访问: {project_dir}",
-        }
-
-    values = {}
-    for field, key in _CONFIG_KEYS.items():
-        value = data.get(field)
-        if isinstance(value, bool):
-            value = "true" if value else "false"
-        values[key] = str(value)
-    values["PROJECT_DIR"] = project_dir
-
-    target = user_env_path()
+    try:
+        values, target = _validate_and_build_values(data)
+    except ValueError as e:
+        return {"status": "error", "message": str(e)}
     _update_env_file(target, values)
     return {
         "status": "success",
@@ -148,3 +136,31 @@ async def plugin_setup_impl(ctx: Context = None) -> dict:
         ),
         "saved": values,
     }
+
+
+def _validate_and_build_values(data: dict) -> tuple[dict, Path]:
+    """校验表单数据并构造 .env 键值 (plugin_setup 与 FormInput 共用)。"""
+    project_dir = str(data.get("project_dir", "")).strip().strip('"')
+    if not project_dir or not Path(project_dir).is_dir():
+        raise ValueError(f"项目根目录不存在或不可访问: {project_dir}")
+    values = {}
+    for field, key in _CONFIG_KEYS.items():
+        value = data.get(field)
+        if isinstance(value, bool):
+            value = "true" if value else "false"
+        values[key] = str(value)
+    values["PROJECT_DIR"] = project_dir
+    return values, user_env_path()
+
+
+def handle_config_form(form: PluginConfigForm) -> str:
+    """FastMCP FormInput 提交回调 (Claude Desktop Apps 表单 UI)。
+
+    校验后写入用户级 .env, 返回消息 (send_message=True 时推回对话)。
+    """
+    values, target = _validate_and_build_values(form.model_dump())
+    _update_env_file(target, values)
+    return (
+        f"配置已保存到 {target}，请重启客户端生效。"
+        "已保存: " + ", ".join(f"{k}={v}" for k, v in values.items())
+    )
