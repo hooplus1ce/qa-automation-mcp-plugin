@@ -58,17 +58,18 @@ qa-automation-plugin/
 ├── fastmcp.json              # FastMCP 声明式服务、入口与依赖配置
 ├── pyproject.toml            # Hatchling 构建与项目依赖声明 (包含 pytest 开发依赖组)
 ├── .env.example              # 环境变量配置模板
-├── prompts/                  # 按需读取的提示词模板 (未注册 Skill, 不自动注入上下文)
+├── prompts/                  # 提示词模板: 经 MCP Prompts 暴露 (显式请求才渲染, 不自动注入上下文)
 ├── skills/
 │   └── qa-automation-guide/
 │       └── SKILL.md          # SCM/MOM/WMS/ERP Web 自动化测试 SOP 技能指南
 ├── src/qa_mcp/               # FastMCP 3.x 服务源码
 │   ├── server.py             # 服务装配入口 (Lifespan, Middleware, Provider 与导出工具)
 │   ├── config.py             # 统一超时、轮询与环境变量配置
+│   ├── prompts_registry.py   # prompts/ 目录扫描 → MCP Prompts 注册器 (参数化渲染)
 │   ├── providers/            # FastMCP Provider 扩展 (BrowserProvider, VTableProvider)
 │   ├── tools/                # 25 个 MCP 核心工具实现 (browser, vtable, recorder, vision 等)
 │   └── utils/                # UI 组件适配器、场景图 JS 注入脚本与 Shadcn Excel 渲染器
-└── tests/                    # 单元测试套件 (127 个自动化测试用例)
+└── tests/                    # 单元测试套件 (132 个自动化测试用例)
 ```
 
 ---
@@ -214,6 +215,18 @@ qa-automation-plugin/
 
 ### 4. Agent SOP 技能
 - `qa-automation-guide`: 提供 SCM/MOM/WMS/ERP 测试矩阵设计模式（Pattern A~E）及 UI 框架穿透路由标准。
+
+### 5. 提示词模板 (MCP Prompts)
+- `prompts/` 目录下的 `*.md` 模板经 `prompts_registry.py` 自动注册为 MCP 协议层
+  Prompts（`list_prompts` / `get_prompt`），**客户端显式请求时才渲染**，不会自动
+  注入任何对话上下文。
+- 当前模板 `ui-automation-test`（源自 `ui-automation-test-template.md`）：
+  通用 UI 自动化测试执行任务指令，10 个参数化占位符（用例文档/子表/过滤字段/
+  过滤值/系统 URL/账号/执行人/证据根目录/报告路径/Bug 系统）全部可选，未提供
+  的参数保留占位符原文交由模型确认。
+- 新增模板约定：正文放 ```markdown 代码块（代码块外为使用说明）；文件内"占位符
+  速查表"（表格第一格）定义参数；文件名去 `-template` 后缀即 prompt 名。放一个
+  新 `.md` 到 `prompts/` 即自动生效，无需改代码。
 
 ---
 
