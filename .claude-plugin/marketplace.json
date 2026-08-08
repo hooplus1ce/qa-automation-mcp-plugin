@@ -8,8 +8,8 @@
   },
   "plugins": [
     {
-      "name": "qa-automation",
-      "displayName": "QA Automation MCP",
+      "name": "qa-automation-plugin",
+      "displayName": "QA Automation Plugin",
       "source": {
         "source": "github",
         "repo": "hooplus1ce/qa-automation-mcp-plugin",

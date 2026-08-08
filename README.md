@@ -35,7 +35,7 @@
 - **内层 `--skip-env` 防止二次建环死循环**：子命令 `fastmcp run --skip-env fastmcp.json` 中的 `--skip-env` 标志用于告知 FastMCP 内部 CLI 引擎：*“外层 `uv` 已经完成了虚拟环境的创建与激活，FastMCP 无需在内部重复拉起 `uv` 嵌套构建”*。此举杜绝了死循环，并将服务启动耗时缩短至毫秒级。
 
 ### 2. 插件全局挂载与 `${CLAUDE_PLUGIN_ROOT}` 路径寻址
-- **解决 `not loaded` 的关键**：在 Claude Code / Claude Desktop 插件体系中，用户安装插件后，插件文件解压挂载在插件系统的全局路径下（如 `~/.claude/plugins/qa-automation/`）。当用户在任意其他工作区目录使用该插件时，如果没有指定 `--directory "${CLAUDE_PLUGIN_ROOT}"`，`uv` 会在用户当前工作区寻找 `fastmcp.json`，从而导致找不到配置文件并引发 **`qa-automation-mcp: not loaded`** 加载失败。
+- **解决 `not loaded` 的关键**：在 Claude Code / Claude Desktop 插件体系中，用户安装插件后，插件文件解压挂载在插件系统的全局路径下（如 `~/.claude/plugins/qa-automation-plugin/`）。当用户在任意其他工作区目录使用该插件时，如果没有指定 `--directory "${CLAUDE_PLUGIN_ROOT}"`，`uv` 会在用户当前工作区寻找 `fastmcp.json`，从而导致找不到配置文件并引发 **`qa-automation-mcp: not loaded`** 加载失败。
 - **`${CLAUDE_PLUGIN_ROOT}` 自动注入与挂载**：在 `.claude-plugin/plugin.json` 与 `.mcp.json` 中配置 `--directory "${CLAUDE_PLUGIN_ROOT}"`，确保了无论用户在电脑上的哪个项目路径下触发插件，`uv` 都能准确跳至插件的实际安装根目录去加载 `fastmcp.json` 并激活环境，实现跨目录、跨项目的全局无缝调用。
 ### 3. 用户项目根目录 (`CLAUDE_PROJECT_DIR`) 与相对路径锚定
 - **进程 cwd ≠ 用户项目**：插件化部署时 MCP 服务进程 cwd 是插件安装目录（见第 2 点），若相对路径按 cwd 解析，`describe_image` 的图片入参（粘贴图片、`capture_screenshot` 落盘的 `evidence_assets/` 截图地址）以及 `download_file` / `upload_file` / `export_session` 的文件路径都会解析到插件目录，导致"找不到图片/文件"。
@@ -123,7 +123,7 @@ qa-automation-mcp-plugin/
   在 Claude Code 中添加市场并安装：
   ```bash
   /plugin marketplace add hooplus1ce/qa-automation-mcp-plugin
-  /plugin install qa-automation
+  /plugin install qa-automation-plugin
   ```
 
 ### 方式三：常规 MCP 客户端直接接入（Cursor / VS Code / Claude Desktop 手动配置）

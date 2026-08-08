@@ -1,5 +1,5 @@
 {
-    "name": "qa-automation",
+    "name": "qa-automation-plugin",
     "description": "SCM/MOM/WMS/ERP 企业级 Web 自动化测试 MCP 服务: Playwright CDP 接管本地 Chrome, 提供页面分析/点击输入/动作链/VTable 场景图交互/用例录制与 Shadcn Excel 导出",
     "version": "0.2.0",
     "author": {
