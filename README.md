@@ -58,6 +58,7 @@ qa-automation-plugin/
 ├── fastmcp.json              # FastMCP 声明式服务、入口与依赖配置
 ├── pyproject.toml            # Hatchling 构建与项目依赖声明 (包含 pytest 开发依赖组)
 ├── .env.example              # 环境变量配置模板
+├── prompts/                  # 按需读取的提示词模板 (未注册 Skill, 不自动注入上下文)
 ├── skills/
 │   └── qa-automation-guide/
 │       └── SKILL.md          # SCM/MOM/WMS/ERP Web 自动化测试 SOP 技能指南
