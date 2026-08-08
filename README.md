@@ -49,7 +49,7 @@
 ## 项目目录结构
 
 ```text
-qa-automation-mcp-plugin/
+qa-automation-plugin/
 ├── .claude-plugin/
 │   ├── plugin.json           # 插件主清单 (定义名称、版本、mcpServers 与 skills 显式映射)
 │   └── marketplace.json      # 插件市场注册清单 (定义 Marketplace 索引与 GitHub 源码源)
@@ -105,9 +105,9 @@ qa-automation-mcp-plugin/
 ### 方式一：Claude Desktop 导入 ZIP 插件包（推荐生产使用）
 
 1. **打包插件（开发者）**：
-   直接将项目根目录下除 `.venv`、`__pycache__` 外的文件打包为 `qa-automation-mcp-plugin.zip`（体积约 200KB）。
+   直接将项目根目录下除 `.venv`、`__pycache__` 外的文件打包为 `qa-automation-plugin.zip`（体积约 200KB）。
 2. **导入 Claude Desktop**：
-   - 打开 Claude Desktop $\rightarrow$ 设置 $\rightarrow$ Plugins / MCP Servers $\rightarrow$ 选择导入 `qa-automation-mcp-plugin.zip`。
+   - 打开 Claude Desktop $\rightarrow$ 设置 $\rightarrow$ Plugins / MCP Servers $\rightarrow$ 选择导入 `qa-automation-plugin.zip`。
 3. **自动运行**：
    - Claude Desktop 会解压插件到本地插件目录。
    - 首次触发时外层 `uv run` 自动建环并安装依赖，内层 `--skip-env` 快速调起 MCP 服务。
@@ -117,12 +117,12 @@ qa-automation-mcp-plugin/
 - **本地开发调试**：
   在 Claude Code 中直接指定插件目录运行：
   ```bash
-  claude --plugin-dir ./qa-automation-mcp-plugin
+  claude --plugin-dir ./qa-automation-plugin
   ```
 - **通过 Marketplace 安装**：
   在 Claude Code 中添加市场并安装：
   ```bash
-  /plugin marketplace add hooplus1ce/qa-automation-mcp-plugin
+  /plugin marketplace add hooplus1ce/qa-automation-plugin
   /plugin install qa-automation-plugin
   ```
 
@@ -138,7 +138,7 @@ qa-automation-mcp-plugin/
       "args": [
         "run",
         "--directory",
-        "/绝对路径/到/qa-automation-mcp-plugin",
+        "/绝对路径/到/qa-automation-plugin",
         "fastmcp",
         "run",
         "--skip-env",
