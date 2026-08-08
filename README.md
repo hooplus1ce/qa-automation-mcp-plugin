@@ -1,4 +1,4 @@
-# QA Automation MCP Plugin (Claude Code / Desktop 插件)
+# QA Automation Plugin (Claude Code / Desktop 插件)
 
 [![Python Version](https://img.shields.io/badge/python-3.11%20%7C%203.12%20%7C%203.13%20%7C%203.14-blue)](https://www.python.org/)
 [![FastMCP](https://img.shields.io/badge/FastMCP-3.4.4-green)](https://gofastmcp.com/)
