@@ -116,6 +116,21 @@ qa-automation-plugin/
 3. **自动运行**：
    - Claude Desktop 会解压插件到本地插件目录。
    - 首次触发时外层 `uv run` 自动建环并安装依赖，内层 `--skip-env` 快速调起 MCP 服务。
+4. **首次启用预热（重要，避免"连接中"卡死）**：
+   - 插件首次启用时，客户端调用 `uv run` 现场构建虚拟环境并安装依赖（
+     fastmcp/playwright 等，首次约 20-60 秒）。部分客户端（如 Claude Desktop
+     cowork）对 MCP 服务启动存在超时窗口，若首次依赖安装未完成即被中断，
+     服务会一直显示"连接中"、工具加载不出来。
+   - **遇到"连接中"时**：在插件安装目录执行一次预热，再重启客户端：
+     ```bash
+     uv sync --no-dev --directory "<插件安装目录>"
+     ```
+     插件安装目录示例（Claude Desktop）：`%LOCALAPPDATA%\Claude-3p\
+     local-agent-mode-sessions\<账号>\00000000\cowork_plugins\cache\
+     qa-automation-plugins\qa-automation-plugin\<版本>\`
+   - 预热幂等（依赖已装时秒级完成）；**每次通过 Update 更新插件后建议重新
+     预热一次**——更新会重置插件目录，依赖需重装，uv 全局缓存使重装仅需
+     数秒到数十秒，远快于首次。
 
 ### 方式二：Claude Code 插件加载与市场安装
 
