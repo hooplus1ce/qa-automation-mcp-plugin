@@ -1,0 +1,27 @@
+{
+  "mcpServers": {
+    "qa-automation-mcp": {
+      "command": "uv",
+      "args": [
+        "run",
+        "--directory",
+        "${CLAUDE_PLUGIN_ROOT}",
+        "fastmcp",
+        "run",
+        "--skip-env",
+        "fastmcp.json"
+      ],
+      "env": {
+        "CDP_URL": "http://127.0.0.1:9222",
+        "PYTHONUNBUFFERED": "1"
+      }
+    },
+    "tencent-docs": {
+      "type": "http",
+      "url": "https://docs.qq.com/openapi/mcp",
+      "headers": {
+        "Authorization": "${TENCENT_DOCS_MCP_TOKEN}"
+      }
+    }
+  }
+}

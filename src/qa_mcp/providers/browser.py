@@ -12,6 +12,7 @@ from qa_mcp.tools.browser import (
     click_interact_impl,
     download_file_impl,
     fill_input_impl,
+    hover_interact_impl,
     probe_dynamic_layers_impl,
     switch_target_page_impl,
     upload_file_impl,
@@ -55,6 +56,11 @@ class BrowserAutomationProvider(Provider):
                 fill_input_impl,
                 name="fill_input",
                 description="文本框输入工具：by=css/xpath + selector（支持 iframe_selector 穿透）；value 为空=清空。input_method=type（逐字键盘，触发键盘事件）/fill（原生填充）；clear_first 默认清空；press_enter 可回车；detail=brief/full。visualize 三态（None=跟随配置，默认关）。返回 visual_effects + observation（浮层/消息 + summary + focus + 跳转）。",
+            ),
+            Tool.from_function(
+                hover_interact_impl,
+                name="hover_interact",
+                description="通用悬停工具：将鼠标移动到目标元素中心并停留（默认 500ms），触发 CSS :hover 效果（如 antd Select 的 clear 清空图标、tooltip、下拉箭头翻转），随后统一观察浮层/消息/跳转。by=css/xpath 传 selector（支持 iframe_selector 链式穿透），by=role 传 role+name；hold_ms 可调停留时长。悬停后自动返回 revealed_elements：目标元素内 hover 态新出现的可见子元素（clear 图标等）的顶层视口坐标 topX/topY 与相对路径 relPath，可直接用 click_interact(by=coordinate, x=topX, y=topY) 点击，无需截图推断坐标。典型用法：① hover_interact 悬停到 select 本体 → 取返回的 clear 图标 topX/topY ② click_interact by=coordinate 点击清空值。detail=brief/full 控制观察输出体积。",
             ),
             Tool.from_function(
                 capture_screenshot_impl,

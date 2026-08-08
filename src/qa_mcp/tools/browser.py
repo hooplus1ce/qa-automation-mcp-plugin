@@ -159,6 +159,38 @@ class BrowserManager:
         self._context = None
         self._target_page = None
 
+    async def recover(self, preferred_url: Optional[str] = None) -> Page:
+        """重建 CDP 连接 (动作被 wait_for 强杀后的自愈入口)。
+
+        触发场景: asyncio.wait_for 强杀一个 CDP 请求半开的协程后, Playwright 底层
+        可能残留 pending 协议请求, 导致后续所有工具调用全部排队挂死 (现象: 同一
+        定位单独调用成功、紧随失败动作后调用却超时)。重建连接是最干净的恢复方式,
+        等价于 MCP 服务重启但保留浏览器目标页锁定语义。
+
+        preferred_url: 重建后优先按 URL 子串恢复目标页锁定; 无匹配则走默认选择规则。
+        """
+        async with self._lock:
+            # 旧连接可能半开, stop 时不要无限等待协议响应
+            if self._playwright:
+                try:
+                    await asyncio.wait_for(self._playwright.stop(), timeout=5)
+                except (asyncio.TimeoutError, Exception):
+                    pass
+            self._playwright = None
+            self._browser = None
+            self._context = None
+            self._target_page = None
+
+            self._playwright = await async_playwright().start()
+            await self._connect()
+            if preferred_url:
+                try:
+                    self._target_page = await self.switch_target(preferred_url)
+                    return self._target_page
+                except RuntimeError:
+                    pass
+            return await self._select_page()
+
     async def close(self):
         """关闭 CDP 连接 (幂等, 协程安全)。"""
         async with self._lock:
@@ -780,6 +812,59 @@ async def _enhance_locator_timeout(e: Exception, locator, label: str) -> Excepti
     return error
 
 
+async def _wait_visible_or_first(
+    lc, action_label: str, timeout_ms: int
+):
+    """可见性等待 + strict violation 消歧。
+
+    多元素匹配 (典型: 日历双面板同名 td[title=...]、antd 常驻 dropdown 残余层)
+    时 wait_for 抛 strict mode violation, 直接失败挂死重试。此时自动取 .first
+    (DOM 顺序靠前的匹配, 如日历左面板优先于右面板预览) 消歧重试。
+    非 strict 错误原样抛出 (由调用方增强诊断/重试)。
+    """
+    try:
+        await lc.wait_for(state="visible", timeout=timeout_ms)
+    except Exception as e:
+        if "strict mode violation" in str(e).lower():
+            logger.warning(
+                f"[{action_label}] 多元素匹配 (strict violation), 取 .first 消歧: {e}"
+            )
+            lc = lc.first
+            await lc.wait_for(state="visible", timeout=timeout_ms)
+            return lc
+        raise
+    return lc
+
+
+def _is_actionability_failure(e: Exception) -> bool:
+    """判断点击/悬停/聚焦失败是否为 actionability 检查类 (可 force 兜底)。
+
+    Playwright actionability 失败类型: 持续动画 (not stable)、元素被遮挡
+    (intercepts pointer events)、不在视口 (outside of the viewport)、不可见等;
+    click/hover 的 timeout 只发生在 actionability 阶段, 超时异常一律视为
+    actionability 失败。force=True 跳过全部检查直接派发事件, 是这类失败的
+    标准兜底 (先正常尝试短超时, 失败后 force, 再失败交重试/抛错)。
+
+    非 actionability 错误 (元素不存在/不可编辑等) 返回 False, 原样抛出。
+    """
+    if isinstance(e, TimeoutError):
+        return True
+    message = str(e).lower()
+    return any(
+        marker in message
+        for marker in (
+            "stable",
+            "actionability",
+            "not stable",
+            "receives events",
+            "intercepts pointer events",
+            "outside of the viewport",
+            "element is not visible",
+            "element is hidden",
+        )
+    )
+
+
 async def _do_click(
     page,
     by: str,
@@ -866,10 +951,24 @@ async def _do_click(
         else:
             lc = target.locator(full_selector)
         try:
-            await lc.wait_for(state="visible", timeout=ELEMENT_WAIT_TIMEOUT_MS)
+            lc = await _wait_visible_or_first(lc, action_label, ELEMENT_WAIT_TIMEOUT_MS)
         except Exception as e:
-            raise await _enhance_locator_timeout(e, lc, action_label) from e
-        await lc.scroll_into_view_if_needed()
+            err = await _enhance_locator_timeout(e, lc, action_label)
+            # 诊断增强: antd hover 态元素 (clear 图标等) 默认 display:none,
+            # 直接定位必然失败 — 提示先 hover_interact 悬停父级再取坐标。
+            if "匹配 0 个元素" in str(err) and ("__clear" in str(full_selector) or "clear" in str(full_selector).lower()):
+                raise RuntimeError(
+                    f"{err} [提示: 该元素为 hover 态派生元素 (如 antd clear 图标), "
+                    f"默认 display:none 不可见; 请先 hover_interact 悬停其父级元素, "
+                    f"从返回的 revealed_elements 中取 topX/topY 坐标点击]"
+                ) from e
+            raise err from e
+        # 滚动降级: 持续动画页面 (VTable 重绘/antd 动效) 会使稳定等待超时,
+        # 此时元素往往已在视口内, click 内部自带滚动, 无需硬等稳定。
+        try:
+            await asyncio.wait_for(lc.scroll_into_view_if_needed(), timeout=5)
+        except (asyncio.TimeoutError, Exception):
+            pass
 
         # 动作前视觉: 光标平滑移动到目标中心 + 高亮框 + 动作标签
         box = await lc.bounding_box()
@@ -882,10 +981,26 @@ async def _do_click(
                 action="click",
                 enabled=True,
             )
-        if click_kind == "double":
-            await lc.dblclick()
-        else:
-            await lc.click()
+        # 点击执行: 常规 actionability (含 stable) 等待; 持续动画页面 stable 检查
+        # 会挂到默认 30s, 故先给短超时, 超时后 force 兜底 (跳过 actionability 直接派发事件)。
+        click_timeout = max(ELEMENT_WAIT_TIMEOUT_MS, 5000)
+        try:
+            if click_kind == "double":
+                await lc.dblclick(timeout=click_timeout)
+            else:
+                await lc.click(timeout=click_timeout)
+        except Exception as e:
+            if _is_actionability_failure(e):
+                logger.warning(
+                    f"[{action_label}] actionability 检查未通过 (持续动画/遮挡/不在视口), "
+                    f"force 点击兜底: {e}"
+                )
+                if click_kind == "double":
+                    await lc.dblclick(force=True)
+                else:
+                    await lc.click(force=True)
+            else:
+                raise
         return box
 
     try:
@@ -942,10 +1057,15 @@ async def _do_fill(
         target, frame_path_list = await _resolve_frame_target(page, iframe_selector)
         lc = target.locator(full_selector)
         try:
-            await lc.wait_for(state="visible", timeout=ELEMENT_WAIT_TIMEOUT_MS)
+            lc = await _wait_visible_or_first(lc, action_label, ELEMENT_WAIT_TIMEOUT_MS)
         except Exception as e:
             raise await _enhance_locator_timeout(e, lc, action_label) from e
-        await lc.scroll_into_view_if_needed()
+        # 滚动降级: 持续动画页面 (VTable 重绘/antd 动效) 会使稳定等待超时,
+        # 此时元素往往已在视口内, click/fill 内部自带滚动, 无需硬等稳定。
+        try:
+            await asyncio.wait_for(lc.scroll_into_view_if_needed(), timeout=5)
+        except (asyncio.TimeoutError, Exception):
+            pass
 
         # 动作前视觉: 光标移动至输入框 + 高亮框 + 动作标签
         box = await lc.bounding_box()
@@ -958,8 +1078,18 @@ async def _do_fill(
                 action="input",
                 enabled=True,
             )
-        # 先点击聚焦 (对齐人工操作: 触发组件的 focus/激活逻辑)
-        await lc.click()
+        # 先点击聚焦 (对齐人工操作: 触发组件的 focus/激活逻辑);
+        # actionability 检查失败 (持续动画/遮挡等) → force 聚焦兜底。
+        try:
+            await lc.click(timeout=max(ELEMENT_WAIT_TIMEOUT_MS, 5000))
+        except Exception as e:
+            if _is_actionability_failure(e):
+                logger.warning(
+                    f"[{action_label}] actionability 检查未通过, force 点击聚焦兜底: {e}"
+                )
+                await lc.click(force=True)
+            else:
+                raise
         if method == "fill":
             await lc.fill(value or "")
         else:
@@ -996,6 +1126,248 @@ async def _do_fill(
         "description": description,
         "visual_effects": viz_result,
     }
+
+
+HOVER_REVEAL_SCAN_JS = r"""function(el) {
+    // 悬停态新出现元素扫描: 目标元素(如 antd select)内由 display:none 转为可见的
+    // 子元素 (典型: clear 清空图标、hover 提示), 返回顶层视口坐标 + 相对CSS路径。
+    // 注意: 必须用普通函数 (Playwright evaluate 以首个参数注入元素, 箭头函数
+    // 无 arguments 且不接收注入参数, 会静默返回空)。
+    function topOffset() {
+        let ox = 0, oy = 0, cur = window;
+        try {
+            while (cur !== window.top) {
+                const fe = cur.frameElement;
+                if (fe) { const r = fe.getBoundingClientRect(); ox += r.x; oy += r.y; }
+                cur = cur.parent;
+            }
+        } catch (e) {}
+        return [ox, oy];
+    }
+    function relPath(node, rootEl) {
+        const parts = [];
+        let cur = node;
+        while (cur && cur !== rootEl && cur.nodeType === 1) {
+            const tag = cur.tagName.toLowerCase();
+            const parent = cur.parentElement;
+            const idx = parent ? Array.from(parent.children).indexOf(cur) + 1 : 1;
+            parts.unshift(tag + ':nth-child(' + idx + ')');
+            cur = parent;
+        }
+        return parts.join(' > ');
+    }
+    const revealed = [];
+    if (!el) return revealed;
+    const [ox, oy] = topOffset();
+    const all = el.querySelectorAll('*');
+    for (const node of all) {
+        const style = getComputedStyle(node);
+        if (style.display === 'none' || style.visibility === 'hidden' || style.visibility === 'collapse') continue;
+        const rect = node.getBoundingClientRect();
+        if (rect.width < 2 || rect.height < 2) continue;
+        // 排除大块容器与纯文本节点容器 (rendered/search 区域)
+        const cls = String(node.className || '');
+        if (/rendered|search|selected-value|selection-selected/i.test(cls)) continue;
+        revealed.push({
+            tag: node.tagName.toLowerCase(),
+            cls: cls,
+            text: (node.textContent || '').trim().slice(0, 20),
+            topX: Math.round(rect.x + rect.width / 2 + ox),
+            topY: Math.round(rect.y + rect.height / 2 + oy),
+            relPath: relPath(node, el),
+        });
+    }
+    return revealed.slice(0, 20);
+}"""
+
+
+async def _scan_hover_revealed(page, lc, iframe_selector: Optional[str]) -> List[dict]:
+    """悬停后扫描目标元素内 hover 态新出现的可见子元素 (如 antd clear 图标)。
+
+    返回 [{tag, cls, text, topX, topY, relPath}]: topX/topY 为浏览器顶层视口坐标,
+    可直接 click_interact(by=coordinate) 点击; relPath 为相对目标元素的选择器路径,
+    可与目标 selector 拼接为完整 CSS 定位。
+    """
+    try:
+        target, _ = await _resolve_frame_target(page, iframe_selector)
+        return await lc.evaluate(HOVER_REVEAL_SCAN_JS)
+    except Exception as e:
+        logger.warning(f"悬停态元素扫描失败: {e}")
+        return []
+
+
+async def _do_hover(
+    page,
+    by: str,
+    selector: Optional[str] = None,
+    iframe_selector: Optional[str] = None,
+    hold_ms: int = 500,
+    visualize: Optional[bool] = None,
+    description: Optional[str] = None,
+    role: Optional[str] = None,
+    name: Optional[str] = None,
+) -> dict:
+    """单次悬停执行体 (不含导航快照/统一观察): 定位 + 光标移动悬停。
+
+    供 hover_interact_impl / execute_action_chain 共用。
+    hold_ms: 悬停停留时长 (ms), 默认 500ms — 让 CSS :hover 触发的子元素
+    (如 antd select 的 clear 图标、tooltip) 渲染完成后再返回, 便于链式下一步
+    直接点击该 hover 态元素。
+    悬停后自动扫描目标元素内 hover 态新出现的可见子元素 (clear 图标等),
+    返回其顶层坐标与相对路径 (revealed_elements), 无需截图推断坐标。
+    """
+    by_lower = (by or "").lower()
+    viz = _visualize_enabled(visualize)
+
+    if by_lower == "role":
+        if not role:
+            raise RuntimeError("by=role 时必须提供 role")
+        full_selector = f"role={role}" + (f" name={name}" if name else "")
+        locator_kind = "role"
+    else:
+        full_selector = f"xpath={selector}" if by_lower == "xpath" else selector
+        locator_kind = "css"
+
+    action_label = description or full_selector or "悬停"
+    viz_result = None
+    frame_path_list: List[str] = []
+    if not viz:
+        viz_result = await _visual_show(page, (), (), "", "", enabled=False)
+
+    async def _dom_hover_once():
+        # 每次执行/重试重新解析目标与 locator (同 _do_click 的重试语义)
+        nonlocal frame_path_list, viz_result
+        target, frame_path_list = await _resolve_frame_target(page, iframe_selector)
+        if locator_kind == "role":
+            lc = target.get_by_role(role, name=name or None)
+        else:
+            lc = target.locator(full_selector)
+        try:
+            lc = await _wait_visible_or_first(lc, action_label, ELEMENT_WAIT_TIMEOUT_MS)
+        except Exception as e:
+            raise await _enhance_locator_timeout(e, lc, action_label) from e
+        # 滚动降级: 持续动画页面 (VTable 重绘/antd 动效) 会使稳定等待超时,
+        # 此时元素往往已在视口内, hover 内部自带滚动, 无需硬等稳定。
+        try:
+            await asyncio.wait_for(lc.scroll_into_view_if_needed(), timeout=5)
+        except (asyncio.TimeoutError, Exception):
+            pass
+
+        # 动作前视觉: 光标平滑移动到目标中心 + 高亮框 + 动作标签
+        box = await lc.bounding_box()
+        if viz and box:
+            viz_result = await _visual_show(
+                page,
+                rect=(box["x"], box["y"], box["width"], box["height"]),
+                point=(box["x"] + box["width"] / 2, box["y"] + box["height"] / 2),
+                label=action_label,
+                action="hover",
+                enabled=True,
+            )
+        # actionability 检查失败 (持续动画/遮挡等) → force 悬停兜底 (直接移动鼠标, 跳过检查)。
+        try:
+            await lc.hover(timeout=max(ELEMENT_WAIT_TIMEOUT_MS, 5000))
+        except Exception as e:
+            if _is_actionability_failure(e):
+                logger.warning(
+                    f"[{action_label}] actionability 检查未通过, force 悬停兜底: {e}"
+                )
+                await lc.hover(force=True)
+            else:
+                raise
+        # 停留让 CSS :hover 派生元素 (clear 图标/tooltip) 渲染完成
+        if hold_ms and hold_ms > 0:
+            await asyncio.sleep(hold_ms / 1000)
+        return box
+
+    try:
+        box = await retry_ui_action(action_label, _dom_hover_once)
+    except Exception:
+        if viz:
+            viz_result = await _visual_finish(page, False, True, viz_result)
+        raise
+    viz_result = await _visual_finish(page, True, viz, viz_result)
+
+    # 悬停态元素扫描: 目标元素内由隐藏转可见的子元素 (clear 图标/tooltip),
+    # 返回顶层视口坐标与相对路径, 供下一步直接点击。
+    revealed = []
+    try:
+        target, _ = await _resolve_frame_target(page, iframe_selector)
+        if locator_kind == "role":
+            revealed = await _scan_hover_revealed(page, target.get_by_role(role, name=name or None), iframe_selector)
+        else:
+            revealed = await _scan_hover_revealed(page, target.locator(full_selector), iframe_selector)
+    except Exception as e:
+        logger.warning(f"悬停态元素扫描失败: {e}")
+
+    return {
+        "status": "success",
+        "by": by_lower,
+        "selector": full_selector,
+        "frame_path": frame_path_list,
+        "element_box": {"x": box["x"], "y": box["y"], "width": box["width"], "height": box["height"]} if box else None,
+        "element_center": {"x": round(box["x"] + box["width"] / 2, 2), "y": round(box["y"] + box["height"] / 2, 2)} if box else None,
+        "revealed_elements": revealed,
+        "description": description,
+        "visual_effects": viz_result,
+    }
+
+
+async def hover_interact_impl(
+    by: str = "css",
+    selector: Optional[str] = None,
+    iframe_selector: Optional[str] = None,
+    hold_ms: int = 500,
+    description: Optional[str] = None,
+    expected_result: Optional[str] = None,
+    visualize: Optional[bool] = None,
+    detail: str = "brief",
+    role: Optional[str] = None,
+    name: Optional[str] = None,
+) -> dict:
+    """
+    通用悬停工具: 将鼠标移动到目标元素中心并停留, 用于触发 CSS :hover 效果
+    (如 antd Select 的 clear 清空图标、tooltip、下拉箭头翻转等), 随后统一观察
+    (浮窗/弹窗/消息提示 + tab 页跳转 + iframe 跳转)。
+
+    by=css/xpath: selector 为 CSS 选择器/XPath 表达式 (支持 iframe_selector 链式穿透);
+    by=role:      role/name 语义定位 (get_by_role), role 必填, name 可选;
+    hold_ms:      悬停停留时长 (默认 500ms), hover 态派生元素 (如 clear 图标) 渲染
+                  完成后返回, 链式下一步可直接点击该元素;
+    detail:       brief(默认) | full — 悬停后观察输出体积。
+
+    悬停态元素扫描: 悬停完成后自动扫描目标元素内由隐藏转可见的子元素
+    (antd clear 清空图标、hover 提示等), 返回 revealed_elements 数组, 每项含
+    topX/topY (浏览器顶层视口坐标, 可直接 click_interact by=coordinate 点击)
+    与 relPath (相对目标元素的 CSS 路径, 可与目标 selector 拼接定位) —
+    无需截图推断坐标。
+
+    典型用法 (清空 antd 单选值, 不依赖猜坐标):
+      1) hover_interact 悬停到 select 本体 → 返回 revealed_elements 中
+         clear 图标的 topX/topY
+      2) click_interact by=coordinate 用该坐标点击 → 值清空
+
+    返回: status/by/定位信息 + revealed_elements + visual_effects + observation
+          (dynamic_layers/new_layers/summary/focus 浮层弹窗消息 + navigation 跳转对比)。
+    """
+    by_lower = (by or "").lower()
+    if by_lower not in ("css", "xpath", "role"):
+        raise RuntimeError(f"by 仅支持 css / xpath / role, 收到: {by}")
+    if by_lower in ("css", "xpath") and not selector:
+        raise RuntimeError(f"by={by_lower} 时必须提供 selector")
+    if by_lower == "role" and not role:
+        raise RuntimeError("by=role 时必须提供 role")
+
+    page = await browser_mgr.get_page()
+    before = await snapshot_navigation(page)
+    result = await _do_hover(
+        page, by_lower, selector, iframe_selector,
+        hold_ms=hold_ms, visualize=visualize, description=description,
+        role=role, name=name,
+    )
+    result["expected_result"] = expected_result
+    result["observation"] = await observe_after_click(page, before, detail=detail)
+    return result
 
 
 async def click_interact_impl(
