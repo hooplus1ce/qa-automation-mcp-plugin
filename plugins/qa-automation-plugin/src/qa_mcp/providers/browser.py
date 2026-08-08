@@ -19,7 +19,8 @@ from qa_mcp.tools.browser import (
     wait_for_condition_impl,
 )
 from qa_mcp.tools.recorder import execute_and_record_impl, start_recording_impl
-from qa_mcp.tools.vision import describe_image_impl
+from qa_mcp.tools.setup import plugin_setup_impl
+from qa_mcp.tools.vision import describe_image_impl, vision_login_impl
 
 class BrowserAutomationProvider(Provider):
     """浏览器自动化工具集: 页面分析 / 点击 / 输入 / 截图 / 用例录制 / 条件等待。"""
@@ -70,7 +71,17 @@ class BrowserAutomationProvider(Provider):
             Tool.from_function(
                 describe_image_impl,
                 name="describe_image",
-                description="仅当当前主模型为纯文本模型（如 DeepSeek-R1、DeepSeek-V3、GLM 纯文本版等）无法识别图片时使用的降级视觉识别工具。将本地图片路径（绝对路径或相对用户项目根目录的相对路径）、公网 URL 或对话框粘贴的图片发送给腾讯云 TokenHub GLM-5V 模型（OpenAI 兼容接口）流式解析。thinking=True（默认）开启深度思考并返回 reasoning（模型思考过程）与 description（最终回答），reasoning_effort 可调思考深度（max/high/medium/low）。若当前主模型本身具备原生多模态视觉能力（如 GPT-4o、Claude 3.5/3.7 Sonnet、Claude Opus 5、Gemini、Qwen2.5-VL、GLM-4V 等），绝对禁止调用本工具，必须由主模型直接看图。",
+                description="仅当当前主模型为纯文本模型（如 DeepSeek-V4、DeepSeek-R1、GLM 纯文本版等）无法识别图片时使用的降级视觉识别工具，实现主模型 + 视觉模型的角色分工（vision role）。将本地图片路径（绝对路径或相对用户项目根目录的相对路径）、公网 URL 或对话框粘贴的图片发送给视觉模型流式解析。视觉模型由 VISION_PROVIDER 配置（auto/tokenhub/antigravity/custom，默认 auto：已登录 Antigravity 走 gemini-3.6-flash，否则腾讯云 TokenHub GLM-5V；VISION_MODEL 可覆盖模型名；antigravity 通道经 OAuth 授权网页登录、凭据自动刷新，首次使用报错时按提示运行 python -m qa_mcp.vision_antigravity login）。thinking=True（默认）开启深度思考（provider 支持时），reasoning_effort 控制思考深度（auto 按问题长度自适应，默认；可选 low/medium/high/max）；interactive=True 时先弹出交互对话框让用户选择识别粒度（快速/标准/深度），适合交互式会话；include_reasoning=False（默认）不返回思考过程以节省主模型上下文，诊断需要时置 True。同图同问结果按图片内容哈希缓存（cached=True 表示命中，不重复调用 API）；失败返回 error_type 分类（missing_key/auth_failed/rate_limited/network/upstream/bad_request）与简短可操作消息。若当前主模型本身具备原生多模态视觉能力（如 GPT-4o、Claude 3.5/3.7 Sonnet、Gemini 系列、Qwen2.5-VL 等），绝对禁止调用本工具，必须由主模型直接看图。",
+            ),
+            Tool.from_function(
+                plugin_setup_impl,
+                name="plugin_setup",
+                description="插件交互式配置向导（MCP elicitation 表单）：弹出表单收集环境变量（用户项目根目录 / Chrome CDP 地址 / 视觉识别通道 / 视觉模型 / 下载目录 / 鼠标高亮），校验后写入用户级配置 ~/.qa-automation-plugin/.env，重启客户端后生效。用户明确要求配置插件环境变量、或工具报错提示配置缺失时调用本工具；表单字段已预填当前生效值，可只修改需要变更的项。取消/拒绝或客户端不支持表单时不会修改任何配置。",
+            ),
+            Tool.from_function(
+                vision_login_impl,
+                name="vision_login",
+                description="Antigravity 视觉通道 OAuth 授权登录（对话内完成）：调用后打开浏览器授权网页，等待用户完成授权（本地回调，约 180s 超时）后返回登录状态与 projectId。当 describe_image 返回 missing_key 错误提示未找到 Antigravity 凭据时，调用本工具完成授权；已登录时直接返回成功。授权一次长期有效（token 自动刷新），无需重复登录。",
             ),
             Tool.from_function(
                 switch_target_page_impl,

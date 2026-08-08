@@ -38,9 +38,28 @@
 ### 2. 插件全局挂载与 `${CLAUDE_PLUGIN_ROOT}` 路径寻址
 - **解决 `not loaded` 的关键**：在 Claude Code / Claude Desktop 插件体系中，用户安装插件后，插件文件解压挂载在插件系统的全局路径下（如 `~/.claude/plugins/qa-automation-plugin/`）。当用户在任意其他工作区目录使用该插件时，如果没有指定 `--directory "${CLAUDE_PLUGIN_ROOT}"`，`uv` 会在用户当前工作区寻找 `fastmcp.json`，从而导致找不到配置文件并引发 **`qa-automation-mcp: not loaded`** 加载失败。
 - **`${CLAUDE_PLUGIN_ROOT}` 自动注入与挂载**：在 `.claude-plugin/plugin.json` 中配置 `--directory "${CLAUDE_PLUGIN_ROOT}"`，确保了无论用户在电脑上的哪个项目路径下触发插件，`uv` 都能准确跳至插件的实际安装根目录去加载 `fastmcp.json` 并激活环境，实现跨目录、跨项目的全局无缝调用。
-### 3. 用户项目根目录 (`CLAUDE_PROJECT_DIR`) 与相对路径锚定
+### 3. 用户项目根目录 (`PROJECT_DIR`) 与相对路径锚定
 - **进程 cwd ≠ 用户项目**：插件化部署时 MCP 服务进程 cwd 是插件安装目录（见第 2 点），若相对路径按 cwd 解析，`describe_image` 的图片入参（粘贴图片、`capture_screenshot` 落盘的 `evidence_assets/` 截图地址）以及 `download_file` / `upload_file` / `export_session` 的文件路径都会解析到插件目录，导致"找不到图片/文件"。
-- **`CLAUDE_PROJECT_DIR` 还原用户项目根**：Claude Code 启动 MCP 服务时会向子进程注入 `CLAUDE_PROJECT_DIR` 环境变量（用户当前项目根目录）。`src/qa_mcp/config.py` 以 `PROJECT_DIR = CLAUDE_PROJECT_DIR > 进程 cwd` 解析项目根，所有相对目录（`evidence_assets/`、`output_testcases/`、`downloads/`）与工具的相对路径入参（图片/上传文件）统一锚定到用户项目根，其次回退进程 cwd，保证在任意工作区使用插件时图片识别与文件读写都能正确命中。
+- **自动识别用户项目根（四级优先级链）**：`src/qa_mcp/config.py` 按以下顺序解析
+  `PROJECT_DIR`，保证资产（证据/截图/下载/导出）在任何部署形态都落在用户项目：
+  1. `PROJECT_DIR` 环境变量 —— 任何客户端可显式配置（`.mcp.json` / 客户端 MCP
+     配置的 `env` / 用户级 `~/.qa-automation-plugin/.env`），最高优先
+  2. `CLAUDE_PROJECT_DIR` —— Claude Code 插件化部署时注入的用户项目根
+  3. **进程树回溯嗅探** —— 其他客户端（Cursor / VS Code 等 CLI/IDE）：沿父进程
+     链跳过插件目录，自动识别客户端工作目录（需目录含 `.git`/`.gitignore`/
+     `pyproject.toml`/`package.json` 等标志，防止误判系统目录）
+  4. 进程 cwd —— 本地直跑最终回退
+- **Claude Desktop 用户请显式配置 `PROJECT_DIR`**（实测结论：Desktop 启动 MCP
+  server 时不注入项目目录环境变量，会话记录延迟写盘，无法自动识别活跃项目）。
+  在用户级配置文件 `~/.qa-automation-plugin/.env` 中指定（用户自己的目录，非共享
+  插件目录）：
+  ```bash
+  # ~/.qa-automation-plugin/.env
+  PROJECT_DIR=D:\Developer\Hoolinks\APS
+  ```
+  加载优先级：用户项目根 `.env` > 用户级 `~/.qa-automation-plugin/.env` > 插件目录 `.env`；
+  换项目时改这一行即可（或在 Desktop 的 MCP 配置 `env` 中设置，随项目走）。
+- 所有相对目录（`evidence_assets/`、`output_testcases/`、`downloads/`）与工具的相对路径入参统一锚定解析结果，保证在任意客户端/工作区使用插件时图片识别与文件读写都能正确命中。
 ### 4. 全面支持 Python 3.14 稳定版与向下兼容
 - 项目依赖规范配置为 `requires-python = ">=3.11"`（`pyproject.toml`）与 `"python": ">=3.11"`（`fastmcp.json`）。
 - 完全支持已正式发布的 **Python 3.14 稳定版**，同时对 Python 3.11 / 3.12 / 3.13 保持向下兼容。
@@ -95,17 +114,60 @@
      /Applications/Google\ Chrome.app/Contents/MacOS/Google\ Chrome --remote-debugging-port=9222 --user-data-dir="/tmp/ChromeDebugProfile"
      ```
 
-3. **配置环境变量（可选）**：
-   复制项目模板并根据需要调整配置：
+3. **配置环境变量（可选，推荐放你自己的项目根）**：
+   **不要**在插件安装目录配置环境变量（多人共享 + 更新即重置）。插件启动时会
+   自动定位你当前的项目根并加载其 `.env` 注入插件进程（定位链:
+   `CLAUDE_PROJECT_DIR` > 进程树嗅探 > `PROJECT_DIR` 环境变量 > 进程 cwd；
+   也可以在客户端 MCP 配置的 `env` 中直接设置）。在你的项目根执行：
    ```bash
-   cp .env.example .env
+   cp <插件目录>/.env.example .env
    ```
+   常用变量：
    - `CDP_URL`: Chrome CDP 调试地址（默认 `http://127.0.0.1:9222`）。
    - `VISUAL_EFFECTS`: 是否开启鼠标点击与定位框可视化高亮（默认 `true`）。
-   - `VISION_API_KEY`: 腾讯云 TokenHub GLM-5V 视觉 API Key（仅当主模型为纯文本模型需要图像理解降级时配置）。
+   - `VISION_PROVIDER`: 视觉识别模型通道（`auto`/`tokenhub`/`gemini`/`antigravity`/
+     `custom`，默认 `auto`）。`antigravity` 通道免 API Key，走 OAuth 授权登录
+     （见下节"视觉模型（vision role）配置与使用"）。
+   - `VISION_MODEL`: 覆盖视觉模型名（默认 `gemini-3.6-flash`）。
+   - `VISION_API_KEY`: 腾讯云 TokenHub GLM-5V 视觉 API Key（tokenhub 通道）。
    - `ELEMENT_WAIT_TIMEOUT_MS`: 元素定位等待超时（click/fill/select/press 的 wait_for visible，默认 `10000`ms）。
    - `ACTION_STEP_TIMEOUT_MS`: 动作链单步执行上限（默认 `90000`ms；单步超时记为失败，防止链中一个死动作堵死整条链）。
    - `TOOL_MAX_EXECUTION_MS`: 全局工具执行看门狗（默认 `300000`ms；Chrome 假死/CDP 连接半开时协议调用可能无限等待，超时后强制中断、释放串行队列并重置浏览器连接）。
+
+### 视觉模型（vision role）配置与使用
+
+参考 oh-my-pi 的 role 设计：主模型负责逻辑与交互，图片视觉识别由独立的 **vision role**
+承担——纯文本主模型（如 DeepSeek-V4）通过 `describe_image` 工具获得多模态能力。
+
+**通道对比**（`VISION_PROVIDER`）：
+
+| 通道 | 认证方式 | 默认模型 | 适用场景 |
+|---|---|---|---|
+| `antigravity`（推荐） | OAuth 授权网页登录，免 API Key | gemini-3.6-flash | Antigravity 订阅用户，配额制 |
+| `tokenhub` | `VISION_API_KEY` | glm-5v-turbo | 腾讯云 TokenHub |
+| `custom` | `VISION_API_BASE` + `VISION_MODEL` + Key | 自定义 | 任意 OpenAI 兼容端点 |
+
+**Antigravity 通道使用（推荐，免 API Key）**：
+
+1. **首次使用（对话内完成授权，无需终端命令）**：
+   直接在对话中说"识别一下 xxx 图片"——主模型调 `describe_image` 发现未授权时，
+   会自动改调 **`vision_login` 工具**：浏览器弹出 Antigravity 授权网页 → 点击允许
+   → 授权完成 → 主模型重试识别。全程无需离开对话，授权一次长期有效
+   （token 自动刷新，`vision_login` 已登录时直接返回成功）。
+   备用（命令行方式）：`uv run --directory <插件目录> python -m qa_mcp.vision_antigravity login`
+2. **启用通道**：`.env`（或客户端 MCP 配置的 `env`）中设置 `VISION_PROVIDER=antigravity`
+   （默认 `auto` 在已登录时也会自动走 antigravity，可不设置）。
+3. **使用**：主模型为纯文本时，直接要求它识别图片即可——主模型会自动调
+   `describe_image`（支持截图路径 / 粘贴图片 / URL，`thinking`/`reasoning_effort`/
+   `include_reasoning` 可调）。例如：
+   "识别 evidence_assets/基础配置/20260808_TC001_02_保存成功.png，核对保存提示"
+   同图同问命中 sha256 缓存（返回 `cached=True`），不重复消耗配额。
+
+**注意事项**：
+- Antigravity 按日配额（daily quota）；429 限流时稍后重试，缓存可显著降低消耗。
+- 多客户端（Claude Code / Cursor 等）：凭据用户级共享，但**每个客户端的 MCP
+  配置都要各自设 `VISION_PROVIDER=antigravity`**。
+- 未登录/凭据失效时，`describe_image` 返回可操作错误（含登录命令提示）。
 
 ---
 
@@ -198,7 +260,21 @@
 - `upload_file`: 点击上传按钮/输入框注入指定文件（input 直设或 filechooser 拦截），可选等待"上传成功"反馈验证。
 - `capture_screenshot`: CDP 原生无卡顿截屏（支持整页或视口，生成 PNG 及文件凭证）。
 - `switch_target_page`: 显式重绑/锁定 MCP 操作的目标标签页。
-- `describe_image`: 纯文本主模型环境下的视觉理解降级工具（GLM-5V 流式解析，返回思考过程与回答）。
+- `describe_image`: 纯文本主模型环境下的视觉理解降级工具，实现**主模型 + 视觉模型
+  角色分工**（vision role，参考 oh-my-pi 的 role 设计）。视觉模型由 `VISION_PROVIDER`
+  配置（auto/tokenhub/antigravity/custom；auto 默认：已登录 Antigravity 走
+  `gemini-3.6-flash`，否则腾讯云 TokenHub GLM-5V；`VISION_MODEL` 可覆盖模型名）。**antigravity 通道**：OAuth 授权网页登录（`python -m
+  qa_mcp.vision_antigravity login`，凭据存 `~/.qa-automation-plugin/`，过期自动刷新），
+  经 Cloud Code Assist 协议（streamGenerateContent）调用 Antigravity 的
+  gemini-3.6-flash。`interactive=True` 时通过**交互对话框（MCP Elicitation）**
+  让用户单选识别粒度（快速/标准/深度），客户端不支持时自动降级 auto（后续完善
+  双轨自动降级）。带超时/重试/错误分类，同图同问 sha256 缓存命中免重复调用；
+  `reasoning_effort` 默认 auto 按问题长度自适应；`include_reasoning` 默认关闭，
+  思考链按需获取。
+- `plugin_setup`: **交互式配置向导**（MCP elicitation 表单）——表单收集环境变量
+  （项目根目录/CDP 地址/视觉通道/视觉模型/下载目录/鼠标高亮，预填当前生效值），
+  校验后写入用户级 `~/.qa-automation-plugin/.env`，**重启客户端生效**。用户要求
+  配置或工具报配置缺失时由主模型调用；取消/客户端不支持时零修改。
 - `start_recording`: 初始化测试用例录制会话。
 - `execute_and_record`: 执行动作并自动记录最优高韧性语义定位步骤。
 

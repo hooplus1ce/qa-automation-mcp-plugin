@@ -1,36 +1,120 @@
 import os
+from pathlib import Path
+from typing import Optional
 
 from dotenv import load_dotenv
 
-# 启动时加载项目根目录 .env (若存在)。已存在的进程环境变量优先于 .env,
-# 因此 .mcp.json / 系统环境中的显式配置不会被覆盖。
-def _env_project_dir() -> str:
-    """读取客户端注入的用户项目根 (CLAUDE_PROJECT_DIR, 可能带引号)。"""
-    return os.getenv("CLAUDE_PROJECT_DIR", "").strip().strip('"').strip("'")
+
+def _plugin_root() -> Path:
+    """插件根目录: src/qa_mcp/config.py 向上两级 (parents[2])。"""
+    return Path(__file__).resolve().parents[2]
 
 
-# 启动时加载 .env: 优先用户项目 .env (CLAUDE_PROJECT_DIR, 插件化部署时
-# 用户的配置应覆盖插件自带默认), 其次进程 cwd 的 .env (插件目录/本地项目);
-# 已存在的进程环境变量始终优先, 不会被 .env 覆盖。
-_proj_env = _env_project_dir()
-if _proj_env:
-    load_dotenv(os.path.join(_proj_env, ".env"))
-load_dotenv()
+# 项目根特征标志: 候选目录命中任一即视为项目根 (防止误判系统目录/home)
+_PROJECT_MARKERS = (".git", ".gitignore", "pyproject.toml", "package.json")
+
+
+def _looks_like_project_root(path: Path) -> bool:
+    """候选目录是否像项目根: 含常见项目标志文件。"""
+    return any((path / marker).exists() for marker in _PROJECT_MARKERS)
+
+
+def _detect_project_dir_from_process_tree() -> Optional[str]:
+    """回溯进程树, 自动识别客户端的工作目录 (即用户项目根)。
+
+    原理: 插件化部署时仅最内层 fastmcp 子进程被 `uv run --directory <插件根>`
+    切到插件目录, 外层客户端进程 (claude / cursor / code / Claude Desktop 等)
+    的 cwd 仍是用户项目目录——沿父进程链上溯, 跳过"插件目录及其祖先链"
+    (如 ~/.claude/plugins/cache/...、%LOCALAPPDATA%\\Claude-3p\\...、仓库根),
+    第一个无关 cwd 且**含项目标志文件** (.git/.gitignore/pyproject.toml/
+    package.json) 的目录即客户端工作目录 = 用户项目。
+
+    特征过滤是防误判的关键: 无标志的系统目录 (System32/home/盘符根) 不命中,
+    宁可回退 cwd, 也不把资产写进系统目录。
+
+    psutil 延迟导入: 未安装/权限失败 (跨用户进程) 时静默返回 None,
+    由调用方回退, 不构成硬依赖。
+    """
+    try:
+        import psutil
+    except ImportError:
+        return None
+
+    root = _plugin_root()
+    proc = psutil.Process()
+    while proc is not None:
+        try:
+            # Windows 8.3 短路径 (如 HOOPLU~1) 会破坏 is_relative_to 文本比较,
+            # 统一 resolve 规范化后再判断, 防止把插件根祖先误判为用户项目。
+            cwd = Path(proc.cwd()).resolve()
+        except (psutil.Error, PermissionError, OSError):
+            return None
+        # 跳过插件目录本身及其祖先链 (root.is_relative_to(cwd)) 与插件目录
+        # 内部路径 (cwd.is_relative_to(root)); 首个无关且像项目根的 cwd 即命中。
+        if not (root.is_relative_to(cwd) or cwd.is_relative_to(root)):
+            if cwd.is_dir() and _looks_like_project_root(cwd):
+                return str(cwd.resolve())
+        try:
+            proc = proc.parent()
+        except (psutil.Error, PermissionError):
+            break
+    return None
 
 
 def _resolve_project_dir() -> str:
     """定位用户项目根目录。
 
-    插件化部署时 MCP 服务进程由 `uv run --directory ${CLAUDE_PLUGIN_ROOT}`
-    拉起, 进程 cwd 是插件安装目录而非用户项目; Claude Code 会向子进程注入
-    CLAUDE_PROJECT_DIR 环境变量, 用它还原用户项目根, 使相对路径 (粘贴图片/
-    截图/下载/导出目录) 始终落在用户自己的项目里。未注入时回退进程 cwd
-    (本地直跑 / 无项目概念的客户端)。
+    优先级链 (覆盖插件化部署与任意 MCP 客户端):
+    1. PROJECT_DIR 环境变量   — 任何客户端可显式配置, 最高优先 (可在
+       .mcp.json / 客户端 MCP 配置的 env / 用户级 ~/.qa-automation-plugin/.env
+       中设置; Claude Desktop 不注入项目信息, 必须走此通道)
+    2. CLAUDE_PROJECT_DIR     — Claude Code 插件化部署时注入的用户项目根
+    3. 进程树回溯嗅探          — 其他 CLI/IDE 客户端 (Cursor/VS Code 等):
+       沿父进程链自动识别客户端工作目录
+    4. 进程 cwd                — 本地直跑最终回退
+
+    使相对路径 (粘贴图片/截图/下载/导出目录) 始终落在用户自己的项目里,
+    任何部署形态都不写进插件安装目录。
     """
-    proj = _env_project_dir()
-    if proj and os.path.isdir(proj):
-        return os.path.abspath(proj)
+    for var in ("PROJECT_DIR", "CLAUDE_PROJECT_DIR"):
+        proj = os.getenv(var, "").strip().strip('"').strip("'")
+        if proj and os.path.isdir(proj):
+            return os.path.abspath(proj)
+    detected = _detect_project_dir_from_process_tree()
+    if detected:
+        return detected
     return os.getcwd()
+
+
+def user_env_path() -> Path:
+    """用户级全局 .env 路径 (跨客户端唯一稳定配置位)。"""
+    return Path.home() / ".qa-automation-plugin" / ".env"
+
+
+def _load_env_files(probe_dir: str) -> None:
+    """加载 .env 进插件进程, 优先级: 用户项目根 > 用户级全局 > 进程 cwd。
+
+    - 用户项目根 .env: 环境变量 (CDP_URL / VISION_PROVIDER / GEMINI_API_KEY 等)
+      配置在**用户自己的项目根 .env** 中, 而不是共享的插件安装目录
+      (插件由多人共用, 插件目录的配置会互相污染, 且插件更新时被重置)
+    - 用户级 ~/.qa-automation-plugin/.env: 跨项目固定配置 (如 PROJECT_DIR),
+      适合 Claude Desktop 等不注入项目信息、会话记录又延迟写盘的客户端
+    - 进程 cwd (插件目录/本地项目) .env: 最后兜底
+    已存在的进程环境变量始终优先, 不会被 .env 覆盖 (override=False)。
+    """
+    load_dotenv(os.path.join(probe_dir, ".env"))
+    load_dotenv(user_env_path())
+    load_dotenv()
+
+
+# ===== 启动顺序 =====
+# 1. 初步定位用户项目 (不依赖 .env): 显式 env > CLAUDE_PROJECT_DIR > 嗅探 > cwd
+_probe_dir = _resolve_project_dir()
+# 2. 加载 .env: 用户项目根优先, 用户级全局次之, 插件目录兜底
+#    (override=False, 环境变量优先)
+_load_env_files(_probe_dir)
+# 3. 最终解析 — .env 中若定义了 PROJECT_DIR 可覆盖探测结果
+PROJECT_DIR = _resolve_project_dir()
 
 
 PROJECT_DIR = _resolve_project_dir()
