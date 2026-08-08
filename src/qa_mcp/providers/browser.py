@@ -59,7 +59,7 @@ class BrowserAutomationProvider(Provider):
             Tool.from_function(
                 capture_screenshot_impl,
                 name="capture_screenshot",
-                description="截取当前页面截图：用 CDP 采集（不会卡在字体加载上），保存到 evidence_assets/ 并返回内联 PNG 图片（支持图片的客户端可直接查看）。filename 可指定输出文件名（默认时间戳，自动补 .png）；full_page=True 截整页（含滚动区外内容），False(默认) 只截当前视口。返回文本摘要（文件路径/尺寸/字节数）+ 图片内容。用于视觉证据、页面状态留档、UI 断言前的实况确认。",
+                description="截取当前页面截图：用 CDP 采集（不会卡在字体加载上），保存到 evidence_assets/ 并返回内联 PNG 图片（支持图片的客户端可直接查看）。filename 可指定输出文件名（默认时间戳，自动补 .png；支持子目录路径如 模块名/文件名.png，自动创建目录，便于按模块组织证据资产）；full_page=True 截整页（含滚动区外内容），False(默认) 只截当前视口。返回文本摘要（文件路径/尺寸/字节数）+ 图片内容。用于视觉证据、页面状态留档、UI 断言前的实况确认。",
             ),
             Tool.from_function(
                 describe_image_impl,

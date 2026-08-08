@@ -1220,8 +1220,10 @@ async def capture_screenshot_impl(
         filename = datetime.now().strftime("screenshot_%Y%m%d_%H%M%S.png")
     if not filename.lower().endswith(".png"):
         filename += ".png"
+    # filename 支持子目录 (如 "数据字典/用例001_新增.png"), 按模块组织证据资产
     os.makedirs(EVIDENCE_DIR, exist_ok=True)
     path = os.path.join(EVIDENCE_DIR, filename)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, "wb") as f:
         f.write(raw)
 
