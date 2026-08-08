@@ -26,7 +26,6 @@ from pathlib import Path
 
 from fastmcp.server.providers.skills import SkillsDirectoryProvider
 from qa_mcp.config import EVIDENCE_DIR, OUTPUT_DIR, TOOL_MAX_EXECUTION_MS
-from qa_mcp.prompts_registry import register_prompt_templates
 from qa_mcp.providers import BrowserAutomationProvider, VTableAutomationProvider
 from qa_mcp.tools.browser import browser_mgr
 from qa_mcp.tools.recorder import SESSION_KEY
@@ -141,10 +140,6 @@ mcp = FastMCP(
     ],
     lifespan=server_lifespan,
 )
-
-# prompts/ 模板目录 → MCP Prompts (显式请求才渲染, 不自动注入上下文)
-prompts_dir = Path(__file__).resolve().parents[2] / "prompts"
-register_prompt_templates(mcp, prompts_dir)
 
 # 用例一键落盘导出工具 (读取官方会话态中的录制数据, 采用 Shadcn 引擎)
 @mcp.tool(name="export_session")

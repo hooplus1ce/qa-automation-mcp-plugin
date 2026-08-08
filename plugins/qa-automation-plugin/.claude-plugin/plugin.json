@@ -6,7 +6,8 @@
         "name": "Hoolinks"
     },
     "skills": [
-        "./skills/qa-automation-guide"
+        "./skills/qa-automation-guide",
+        "./skills/ui-automation-test"
     ],
     "mcpServers": {
         "qa-automation-mcp": {

@@ -1,0 +1,147 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# C extensions
+*.so
+
+# Distribution / packaging
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+*.zip
+
+# PyInstaller
+*.manifest
+*.spec
+
+# Installer logs
+pip-log.txt
+pip-delete-this-directory.txt
+
+# Unit test / coverage
+htmlcov/
+.tox/
+.nox/
+.coverage
+.coverage.*
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+*.py,cover
+.hypothesis/
+.pytest_cache/
+pytest_cache/
+
+# Type checkers / linters
+.mypy_cache/
+.dmypy.json
+dmypy.json
+.pyre/
+.pytype/
+.ruff_cache/
+
+# Translations
+*.mo
+*.pot
+
+# Environments
+.env
+.env.*
+!.env.example
+# 本地 MCP 配置 (含 tencent-docs 个人 token, 不提交)
+.mcp.json
+.venv/
+venv/
+ENV/
+env/
+.envrc
+
+# uv
+.uv/
+uv-cache/
+
+# Harness internal state
+.workbuddy/
+
+# IDE / editors
+.idea/
+.vscode/*
+!.vscode/extensions.json
+!.vscode/settings.json.example
+*.swp
+*.swo
+*~
+.project
+.pydevproject
+.settings/
+*.sublime-project
+*.sublime-workspace
+
+# OS
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+Desktop.ini
+
+# Playwright
+test-results/
+playwright-report/
+blob-report/
+playwright/.cache/
+.playwright/
+
+# Screenshots / recordings / reports (local artifacts)
+screenshots/
+recordings/
+videos/
+traces/
+reports/
+*.xlsx
+!**/fixtures/**/*.xlsx
+!**/testdata/**/*.xlsx
+
+# Logs / temp
+*.log
+logs/
+tmp/
+temp/
+.tmp/
+*.tmp
+
+# Local secrets / credentials
+*.pem
+*.key
+secrets/
+credentials/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Local debug Chrome profile (if created under project)
+ChromeDebugProfile/
+chrome-debug-profile/
+
+# 本地调试脚本 (含硬编码 API Key, 不提交)
+test.py

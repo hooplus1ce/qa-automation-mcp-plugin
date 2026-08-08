@@ -5,7 +5,7 @@
       "args": [
         "run",
         "--directory",
-        "${CLAUDE_PLUGIN_ROOT}",
+        "./plugins/qa-automation-plugin",
         "fastmcp",
         "run",
         "--skip-env",

@@ -1,6 +1,6 @@
 {
   "$schema": "https://claude.ai/schemas/marketplace.json",
-  "name": "qa-automation-plugins",
+  "name": "hoolinks",
   "description": "企业级 Web 自动化测试 QA Automation MCP 插件市场",
   "owner": {
     "name": "hooplus1ce",
@@ -10,11 +10,7 @@
     {
       "name": "qa-automation-plugin",
       "displayName": "QA Automation Plugin",
-      "source": {
-        "source": "url",
-        "url": "https://github.com/hooplus1ce/qa-automation-plugin.git",
-        "ref": "main"
-      },
+      "source": "./plugins/qa-automation-plugin",
       "description": "SCM/MOM/WMS/ERP 企业级 Web 自动化测试 MCP 服务: Playwright CDP 接管本地 Chrome, 提供页面分析/点击输入/动作链/VTable 场景图交互/文件下载上传/用例录制与 Shadcn Excel 导出 (27 个 MCP 工具 + 测试设计 SOP 技能)",
       "homepage": "https://github.com/hooplus1ce/qa-automation-plugin",
       "repository": "https://github.com/hooplus1ce/qa-automation-plugin",
