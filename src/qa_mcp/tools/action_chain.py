@@ -1,7 +1,8 @@
+import asyncio
 import logging
 from typing import Any, Dict, List, Optional
 
-from qa_mcp.config import ELEMENT_WAIT_TIMEOUT_MS
+from qa_mcp.config import ACTION_STEP_TIMEOUT_MS, ELEMENT_WAIT_TIMEOUT_MS
 from qa_mcp.tools.browser import (
     browser_mgr,
     _do_click,
@@ -292,8 +293,16 @@ async def execute_action_chain_impl(
                     continue
                 tried += 1
                 try:
-                    await _run_single(attempt)
+                    # 单步硬上限: CDP 挂死时 Playwright 动作级 timeout 不生效,
+                    # 用外层 wait_for 兜底, 防止一个死动作把整条链堵死。
+                    await asyncio.wait_for(
+                        _run_single(attempt), timeout=ACTION_STEP_TIMEOUT_MS / 1000
+                    )
                     break
+                except asyncio.TimeoutError:
+                    last_err = RuntimeError(
+                        f"动作执行超过 {ACTION_STEP_TIMEOUT_MS}ms 上限, 已强制中断该步"
+                    )
                 except Exception as e:
                     last_err = e
             else:

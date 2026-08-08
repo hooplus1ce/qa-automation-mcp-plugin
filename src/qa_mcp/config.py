@@ -68,8 +68,16 @@ def _env_int(name: str, default: int) -> int:
         return default
 
 
-# 元素定位等待超时 (click/fill/select_option/press 的 wait_for visible)
-ELEMENT_WAIT_TIMEOUT_MS = _env_int("ELEMENT_WAIT_TIMEOUT_MS", 6000)
+# 元素定位等待超时 (click/fill/select_option/press 的 wait_for visible)。
+# 默认 10s: 慢页面留足缓冲, 且单次定位失败成本可控 (配合重试仍整体有界)。
+ELEMENT_WAIT_TIMEOUT_MS = _env_int("ELEMENT_WAIT_TIMEOUT_MS", 10000)
+# 全局执行看门狗: 任何工具调用超过该上限即强制中断并释放串行队列。
+# 必要性: Chrome 假死/CDP 连接半开时 Playwright 协议调用可能无限等待,
+# 动作级 timeout 不会触发 (等待的是协议响应); 该上限远小于客户端 30min 超时。
+TOOL_MAX_EXECUTION_MS = _env_int("TOOL_MAX_EXECUTION_MS", 300000)
+# 动作链单步执行上限: 单个 click/fill/select/press 超过即记为失败,
+# 防止链中一个死动作把整条链及后续所有工具调用堵死。
+ACTION_STEP_TIMEOUT_MS = _env_int("ACTION_STEP_TIMEOUT_MS", 90000)
 # 点击/输入后的统一观察轮询窗口 (动态层/消息捕获)
 OBSERVE_WAIT_MS = _env_int("OBSERVE_WAIT_MS", 1500)
 # Ant Design 下拉: 首次等待新下拉挂载; 后续每轮重试等待; 重试总轮数; 重试间隔

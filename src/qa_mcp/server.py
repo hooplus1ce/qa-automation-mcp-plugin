@@ -25,7 +25,7 @@ from fastmcp.tools import ToolResult
 from pathlib import Path
 
 from fastmcp.server.providers.skills import SkillsDirectoryProvider
-from qa_mcp.config import EVIDENCE_DIR, OUTPUT_DIR
+from qa_mcp.config import EVIDENCE_DIR, OUTPUT_DIR, TOOL_MAX_EXECUTION_MS
 from qa_mcp.providers import BrowserAutomationProvider, VTableAutomationProvider
 from qa_mcp.tools.browser import browser_mgr
 from qa_mcp.tools.recorder import SESSION_KEY
@@ -61,10 +61,14 @@ class ToolLoggingMiddleware(Middleware):
 
 
 class ToolSerializationMiddleware(Middleware):
-    """全局动作串行锁: MCP 客户端并发/并行调起多个工具时, 共享的 Chrome
-    页面上下文会被并发操作撕裂 (如两个 fill 同时打字、select 与观察交错)。
-    串行化后任意时刻只有一个工具在操作页面, 杜绝页面级竞态导致的间歇性失败。
-    只读工具同样串行 (成本可忽略, 换取执行确定性)。"""
+    """全局动作串行锁 + 执行看门狗: 串行化共享 Chrome 页面操作 (并发工具调用
+    会撕裂页面上下文), 同时给每次工具调用加上 TOOL_MAX_EXECUTION_MS 硬上限。
+
+    看门狗必要性: Chrome 假死 / CDP 连接半开时, Playwright 协议调用会无限
+    等待响应, 动作级 timeout 不会触发; 若无看门狗, 一个卡死的动作会持锁
+    把后续所有工具调用 (probe/读表等) 永久堵在串行队列里。超时后强制取消、
+    释放队列并后台重置 CDP 连接, 下一次调用可自动重连。
+    """
 
     def __init__(self) -> None:
         self._lock = asyncio.Lock()
@@ -72,8 +76,35 @@ class ToolSerializationMiddleware(Middleware):
     async def on_call_tool(
         self, context: MiddlewareContext, call_next: CallNext
     ) -> ToolResult:
+        tool_name = getattr(context.message, "name", "N/A")
         async with self._lock:
-            return await call_next(context)
+            try:
+                return await asyncio.wait_for(
+                    call_next(context), timeout=TOOL_MAX_EXECUTION_MS / 1000
+                )
+            except asyncio.TimeoutError:
+                logger.error(
+                    f"工具 [{tool_name}] 执行超过 {TOOL_MAX_EXECUTION_MS}ms, "
+                    "强制中断并重置浏览器连接 (释放串行队列)"
+                )
+                # 后台重置 CDP 连接: 取消的调用可能把连接留在半死状态,
+                # 下一次工具调用通过 BrowserManager 重连逻辑恢复。
+                asyncio.create_task(_safe_close_browser())
+                return ToolResult(
+                    content=(
+                        f"工具执行超时 (>{TOOL_MAX_EXECUTION_MS}ms), 已强制中断并"
+                        "释放串行队列, 浏览器连接已重置。请检查浏览器/页面状态后重试。"
+                    ),
+                    is_error=True,
+                )
+
+
+async def _safe_close_browser() -> None:
+    """看门狗超时后的连接重置 (异常只记录, 不阻塞响应)。"""
+    try:
+        await browser_mgr.close()
+    except Exception:
+        logger.exception("看门狗重置浏览器连接失败 (忽略)")
 
 
 @asynccontextmanager
